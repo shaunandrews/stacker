@@ -32,21 +32,34 @@ def mul(A, B):  # 3x4 row-major
             r[i*4+j] = v
     return r
 
-def flatten(files, name, M, color, step, out, top=False):
-    s = step
+def leaf_count(files, name):
+    n = 0
+    for t in files[name]:
+        if t and t[0] == '1':
+            ref = ' '.join(t[14:]).lower()
+            n += leaf_count(files, ref) if ref in files else 1
+    return n
+
+def flatten(files, name, M, color, out, seq):
+    """Parts of `name` in build order. seq[0] is the running step number: every STEP
+    advances it, and a sub-model that's an assembly of its own (it has steps, or more
+    than a few parts: a vehicle, a minifig) is built in its own steps, in the order the
+    model lists it, before its parent carries on."""
     for t in files[name]:
         if not t: continue
-        if top and t[:2] == ['0', 'STEP']: s += 1; continue
+        if t[:2] == ['0', 'STEP']: seq[0] += 1; continue
         if t[0] != '1': continue
         c = int(t[1]); c = color if c in (16, 24) else c
         n = list(map(float, t[2:14]))
         L = [n[3], n[4], n[5], n[0], n[6], n[7], n[8], n[1], n[9], n[10], n[11], n[2]]
         ref = ' '.join(t[14:]).lower()
         if ref in files:
-            flatten(files, ref, mul(M, L), c, s, out)
+            assembly = any(u[:2] == ['0', 'STEP'] for u in files[ref]) or leaf_count(files, ref) > 3
+            if assembly: seq[0] += 1
+            flatten(files, ref, mul(M, L), c, out, seq)
+            if assembly: seq[0] += 1
         else:
-            out.append({'part': ref.replace('\\', '/').replace('.dat', ''), 'color': c, 'M': mul(M, L), 'step': s})
-    return s
+            out.append({'part': ref.replace('\\', '/').replace('.dat', ''), 'color': c, 'M': mul(M, L), 'step': seq[0]})
 
 # Parts printed with a brand logo swap for their plain version.
 PLAIN = {'3596d21': '3596'}
@@ -54,9 +67,9 @@ PLAIN = {'3596d21': '3596'}
 def instances(path):
     files, main = read_model(path)
     out = []
-    steps = flatten(files, main, [1,0,0,0, 0,1,0,0, 0,0,1,0], 7, 0, out, top=True)
+    flatten(files, main, [1,0,0,0, 0,1,0,0, 0,0,1,0], 7, out, [0])
     for inst in out: inst['part'] = PLAIN.get(inst['part'], inst['part'])
-    return out, steps
+    return out, len({inst['step'] for inst in out})
 
 if sys.argv[1] == 'collect':
     names = {r['part_num']: r['name'] for r in csv.DictReader(open('data-src/parts.csv'))}
@@ -131,21 +144,25 @@ for b in blocks:
         b['m'] = [round(v, 5) for v in b['R']] + [round(v, 3) for v in b['T']]
     for k in ('R', 'T', 'h', 'low'): b.pop(k)
 blocks.sort(key=lambda b: (b['step'], b['bottom']))
-if nsteps > 0:
-    groups = {}
-    for b in blocks: groups.setdefault(b['step'], []).append(b)
-    steps = [groups[k] for k in sorted(groups)]
-else:
-    steps, cur, lvl = [], [], None
-    for b in blocks:
+
+def layered(bs):
+    """Bottom-up, 3–5 parts a step, small layers merged."""
+    out, cur, lvl = [], [], None
+    for b in bs:
         if cur and (len(cur) >= 5 or (b['bottom'] != lvl and len(cur) >= 3)):
-            steps.append(cur); cur = []
+            out.append(cur); cur = []
         cur.append(b); lvl = b['bottom']
-    if cur: steps.append(cur)
-# Very large authored steps get split so the shelf stays manageable.
+    if cur: out.append(cur)
+    return out
+
+# Authored steps (and sub-models, in order) as they are; any step too big to follow
+# at a glance — or a model with no steps at all — is broken up bottom-up.
+groups = {}
+for b in blocks: groups.setdefault(b['step'], []).append(b)
 split = []
-for s in steps:
-    for k in range(0, len(s), 8): split.append(s[k:k+8])
+for k in sorted(groups):
+    g = groups[k]
+    split += [g] if len(g) <= 6 else layered(g)
 for s in split:
     for b in s: b.pop('step'); b.pop('bottom')
 json.dump({'id': kit_id, 'title': title, 'pieces': len(blocks), 'steps': split}, open(f'app/public/kits/{kit_id}.json', 'w'))

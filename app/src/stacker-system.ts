@@ -3929,17 +3929,30 @@ export class StackerSystem extends createSystem({}) {
     const arrows: Array<[Vector3, Vector3]> = [];
     const fresh: Mesh[] = [];
     const lift = 0.02;
+    // Parts already built, as boxes: a new part floats out along whichever way it can
+    // slide free of them (up for bricks on studs, sideways for tyres onto hubs).
+    const built: Box3[] = [];
+    kit.steps.slice(0, n).forEach((step) => {
+      for (const b of step) {
+        const piece = this.kitPiece(b, 0, 0);
+        if (piece) built.push(this.lib.geometries[piece.part].boundingBox!.clone().applyMatrix4(piece.m).expandByScalar(-0.0004));
+      }
+    });
+    const middle = new Box3();
+    for (const b of built) middle.union(b);
+    const mid = middle.isEmpty() ? new Vector3() : middle.getCenter(new Vector3());
     kit.steps.slice(0, n + 1).forEach((step, k) => {
       for (const b of step) {
         const piece = this.kitPiece(b, 0, 0);
         if (!piece) continue;
         const m = piece.m.clone();
         if (k === n) {
-          const up = new Vector3(0, 1, 0).applyQuaternion(new Quaternion().setFromRotationMatrix(m));
-          const half = (this.lib.parts[piece.part].h * dims.unit) / 2;
+          const box = this.lib.geometries[piece.part].boundingBox!.clone().applyMatrix4(m);
+          const dir = this.liftDirection(box, built, mid);
           const at = new Vector3().setFromMatrixPosition(m);
-          arrows.push([at.clone().addScaledVector(up, lift - half * 0.2), at.clone().addScaledVector(up, half)]);
-          m.premultiply(new Matrix4().makeTranslation(up.x * lift, up.y * lift, up.z * lift));
+          const reach = Math.abs(dir.x) * (box.max.x - box.min.x) + Math.abs(dir.y) * (box.max.y - box.min.y) + Math.abs(dir.z) * (box.max.z - box.min.z);
+          arrows.push([at.clone().addScaledVector(dir, lift - reach * 0.1), at.clone().addScaledVector(dir, reach / 2)]);
+          m.premultiply(new Matrix4().makeTranslation(dir.x * lift, dir.y * lift, dir.z * lift));
         }
         const mesh = this.addInked(model, piece.part, piece.color, m);
         if (k === n) fresh.push(mesh);
@@ -3989,6 +4002,23 @@ export class StackerSystem extends createSystem({}) {
     }
     this.pageTex!.needsUpdate = true;
     this.redrawUi((u) => u.id.startsWith('man:'));
+  }
+
+  /**
+   * Which way a new part comes in: up if it can slide up free of what's built, else
+   * outward to the side, else down. Parts it already overlaps (what it attaches to)
+   * don't block it.
+   */
+  private liftDirection(box: Box3, built: Box3[], mid: Vector3): Vector3 {
+    const blockers = built.filter((b) => !b.intersectsBox(box));
+    const out = box.getCenter(new Vector3()).sub(mid);
+    const sides = [new Vector3(1, 0, 0), new Vector3(-1, 0, 0), new Vector3(0, 0, 1), new Vector3(0, 0, -1)].sort((a, b) => b.dot(out) - a.dot(out));
+    const swept = new Box3();
+    for (const dir of [new Vector3(0, 1, 0), ...sides, new Vector3(0, -1, 0)]) {
+      swept.copy(box).union(box.clone().translate(dir.clone().multiplyScalar(0.02)));
+      if (!blockers.some((b) => b.intersectsBox(swept))) return dir;
+    }
+    return new Vector3(0, 1, 0);
   }
 
   /** A part drawn manual-style: flat shaded with a bold outline. */

@@ -33,7 +33,7 @@ python3 tools/build-kit.py build data-src/6400-1.mpd Go-Kart 6400-1
 4. **Classify** (after finding the model's grid origin — the most common stud offset among upright parts — and its half-plate phase, with the base under the lowest part):
    - **Grid** if upright (`R[1][1] ≈ 1`) and its footprint lands on whole studs and whole half-plates → `{ i, j, level, turns, fw, fd }`
    - **Free** otherwise → `{ m: [R (9), T (3)] }` in LDU, model space
-5. **Steps:** authored `STEP`s if present; otherwise bottom-up by height, 3–5 parts per step with small layers merged. Steps over 8 parts are split so the shelf stays manageable.
+5. **Steps:** in the model's own order. Each sub-model that's an assembly of its own (it has `STEP`s, or more than 3 parts: a vehicle, a minifig) is built in its own steps where the model lists it, before its parent carries on; `STEP`s anywhere advance the step. Any step over 6 parts, and any model with no steps at all, is broken up bottom-up, 3–5 parts a step with small layers merged. So the Fire Station builds the ladder truck, then the chief's car, then the building, then the firefighters.
 
 ### Kit JSON
 
