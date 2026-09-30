@@ -34,7 +34,7 @@ Three finishes (`FINISHES` in `look.ts`), each one material per palette color fo
 
 | Finish | Setup | Shader patch |
 |---|---|---|
-| **Plastic** | roughness 0.2, F0 0.04 (ABS is a single dielectric layer — no clearcoat) | — |
+| **Plastic** | roughness 0.25, F0 0.04 (ABS is a single dielectric layer — no clearcoat) | Micro-surface: value noise in the part's own mm (≈1.4 mm features, offset per instance) varies roughness ±0.03 and bumps the normal ~20 µm (screen-space, like three's bump map), fading out below pixel size so studs don't shimmer. Per instance (`gl_InstanceID` hash): ±1.5% value, a touch of hue, ±0.03 roughness — identical bricks aren't clones. A faint self-colored glow (color² × 0.035, less where occluded) for light through ABS |
 | **Wood** | roughness 0.62 | Procedural grain in the part's own space (mm): rings around an off-block trunk along X, warped by value noise, plus faint fibres. Palette color stains it (55%). Placed blocks get their own grain from their platform position |
 | **Clear** | roughness 0.04, opacity 0.45, no depth write, no shadows | Premultiplied alpha so reflections stay at full strength while the body fades; edges turn more opaque at grazing angles (Fresnel) |
 

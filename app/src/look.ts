@@ -55,7 +55,7 @@ export function makeFinish(finish: Finish, color: Color | null): Material {
       break;
     default:
       // ABS: dielectric (F0 ≈ 0.045, three's default 0.04), glossy but not mirror-like.
-      m = new MeshStandardMaterial({ color: c, roughness: 0.2 });
+      m = new MeshStandardMaterial({ color: c, roughness: 0.25 });
   }
   // Uncolored materials are the instanced batches of placed blocks: they also get contact occlusion.
   return patchBlockShader(m, finish.id, color === null);
@@ -145,9 +145,30 @@ float contactOcclusion() {
 }
 #endif`;
 
+// Plastic micro-surface: value noise in the part's own millimetres (vLocal), offset per
+// instance, for a faint orange-peel in the normal and roughness. Fades out once a feature
+// gets smaller than a pixel so studs don't shimmer.
+const MICRO_GLSL = `
+varying float vSeed;
+float stackerHash(vec3 p) {
+  p = fract(p * 0.3183099 + 0.1);
+  p *= 17.0;
+  return fract(p.x * p.y * p.z * (p.x + p.y + p.z));
+}
+float stackerNoise(vec3 x) {
+  vec3 i = floor(x);
+  vec3 f = fract(x);
+  f = f * f * (3.0 - 2.0 * f);
+  return mix(
+    mix(mix(stackerHash(i), stackerHash(i + vec3(1, 0, 0)), f.x), mix(stackerHash(i + vec3(0, 1, 0)), stackerHash(i + vec3(1, 1, 0)), f.x), f.y),
+    mix(mix(stackerHash(i + vec3(0, 0, 1)), stackerHash(i + vec3(1, 0, 1)), f.x), mix(stackerHash(i + vec3(0, 1, 1)), stackerHash(i + vec3(1, 1, 1)), f.x), f.y),
+    f.z);
+}`;
+
 export function patchBlockShader<T extends Material>(mat: T, finish = 'plastic', contact = false): T {
   const wood = finish === 'wood';
   const clear = finish === 'clear';
+  const micro = finish === 'plastic' && (mat as unknown as { isMeshStandardMaterial?: boolean }).isMeshStandardMaterial === true;
   if (clear) mat.premultipliedAlpha = true;
   if (contact) (mat as T & { defines: Record<string, string> }).defines = { ...(mat as T & { defines?: Record<string, string> }).defines, STACKER_CONTACT: '' };
   mat.onBeforeCompile = (shader) => {
@@ -165,17 +186,29 @@ attribute float ao;
 varying vec4 vFixedColor;
 varying vec3 vLocal;
 varying float vAo;
+varying float vSeed;
 #ifdef STACKER_CONTACT
 uniform mat4 uPlateInv;
 varying vec3 vPlatePos;
 varying vec3 vPlateNormal;
 #endif`,
       )
-      .replace('#include <begin_vertex>', `#include <begin_vertex>\nvFixedColor = fixedColor;\nvLocal = position * 1000.0;\nvAo = ao;${CONTACT_VERTEX}`);
+      .replace(
+        '#include <begin_vertex>',
+        `#include <begin_vertex>
+vFixedColor = fixedColor;
+vLocal = position * 1000.0;
+vAo = ao;
+#ifdef USE_INSTANCING
+vSeed = fract(sin(float(gl_InstanceID) * 12.9898 + 78.233) * 43758.5453);
+#else
+vSeed = 0.5;
+#endif${CONTACT_VERTEX}`,
+      );
     let frag = shader.fragmentShader
       .replace(
         '#include <common>',
-        `#include <common>\nvarying vec4 vFixedColor;\nvarying vec3 vLocal;\nvarying float vAo;\nuniform float uOcclusion;\n${CONTACT_FRAGMENT}\n${wood ? WOOD_GLSL : ''}`,
+        `#include <common>\nvarying vec4 vFixedColor;\nvarying vec3 vLocal;\nvarying float vAo;\nuniform float uOcclusion;\n${CONTACT_FRAGMENT}\n${wood ? WOOD_GLSL : ''}${micro ? MICRO_GLSL : ''}`,
       )
       .replace(
         '#include <color_fragment>',
@@ -191,8 +224,43 @@ occlusion = 1.0 - (1.0 - occlusion) * (1.0 - clamp(contactOcclusion() * uOcclusi
 #endif
 reflectedLight.indirectDiffuse *= 1.0 - occlusion;
 reflectedLight.indirectSpecular *= 1.0 - occlusion * 0.8;
-reflectedLight.directDiffuse *= 1.0 - occlusion * 0.5;`,
+reflectedLight.directDiffuse *= 1.0 - occlusion * 0.5;${
+          // ABS lets a little light through: a faint glow of its own color, strongest where open.
+          micro ? '\nreflectedLight.indirectDiffuse += diffuseColor.rgb * diffuseColor.rgb * 0.035 * (1.0 - occlusion);' : ''
+        }`,
       );
+    if (micro) {
+      frag = frag
+        .replace(
+          '#include <color_fragment>',
+          `#include <color_fragment>
+// No two bricks quite alike: ~1.5% value and a touch of hue per instance.
+diffuseColor.rgb *= 1.0 + (vSeed - 0.5) * 0.03;
+diffuseColor.rgb = mix(diffuseColor.rgb, diffuseColor.gbr, (fract(vSeed * 7.13) - 0.5) * 0.015);
+vec3 microP = vLocal * 0.7 + vSeed * 91.0;
+float micro = stackerNoise(microP);
+float microFade = clamp(1.5 - length(fwidth(microP)) * 1.5, 0.0, 1.0);`,
+        )
+        .replace(
+          '#include <roughnessmap_fragment>',
+          `#include <roughnessmap_fragment>
+roughnessFactor = clamp(roughnessFactor + (fract(vSeed * 3.71) - 0.5) * 0.06 + (micro - 0.5) * 0.06 * microFade, 0.05, 1.0);`,
+        )
+        .replace(
+          '#include <normal_fragment_maps>',
+          `#include <normal_fragment_maps>
+{
+  // Screen-space bump from the noise (as three's bump map does), ~20 µm tall.
+  vec2 dh = vec2(dFdx(micro), dFdy(micro)) * 2e-5 * microFade;
+  vec3 sx = dFdx(-vViewPosition);
+  vec3 sy = dFdy(-vViewPosition);
+  vec3 r1 = cross(sy, normal);
+  vec3 r2 = cross(normal, sx);
+  float det = dot(sx, r1) * faceDirection;
+  normal = normalize(abs(det) * normal - sign(det) * (dh.x * r1 + dh.y * r2));
+}`,
+        );
+    }
     if (wood) {
       frag = frag
         .replace(
