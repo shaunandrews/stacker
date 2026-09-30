@@ -78,7 +78,7 @@ The app is a static site. The space is `spc_faf94500d20b4e979a35db4ede374b64` (r
    cd .. && sf publish site.zip --space spc_faf94500d20b4e979a35db4ede374b64 --wait --json -y -m "<commit sha + subject>"
    ```
 4. Check the result: `data.versionStatus` should be `ready` (`noChanges: true` just means the build was identical). Don't print the raw output — it may include preview links containing secret `/__/` keys. Parse and show only status fields.
-5. Tell Shaun it's live and to reload on the Quest. Public site: https://semantic-nest.view.fast/
+5. Tell Shaun it's live and to reload on the Quest. Public site: https://stacker.view.fast/
 
 **Auth:** Shaun is logged in with `sf login`. The CLI keeps the credential in the macOS Keychain (service "Spacefast CLI"), so any session can publish. Check with `sf whoami --json`. If it's logged out, ask Shaun to run `sf login` himself (browser approval). Never handle, print, or store tokens yourself, and never pass `--token` or `--show-secret`. Docs: https://spacefast.com/docs/cli.
 
