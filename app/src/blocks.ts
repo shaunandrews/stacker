@@ -3,8 +3,6 @@ import {
   BufferGeometry,
   Color,
   CylinderGeometry,
-  MeshPhysicalMaterial,
-  MeshStandardMaterial,
 } from '@iwsdk/core';
 
 // ---- Units ----
@@ -127,11 +125,6 @@ export class Library {
     return this.colors[color].alpha < 1;
   }
 
-  /** One material per palette color (held, loose and catalog blocks); see-through colors are transparent. */
-  materials(physical: boolean): MeshStandardMaterial[] {
-    return this.colors.map((c) => blockMaterial(physical, c.hex, c.alpha < 1));
-  }
-
   linearColors(): Color[] {
     return this.colors.map((c) => new Color(c.hex));
   }
@@ -139,30 +132,6 @@ export class Library {
 
 function align4(n: number): number {
   return n % 4 ? n + 4 - (n % 4) : n;
-}
-
-export function blockMaterial(physical: boolean, color: string | number, trans: boolean): MeshStandardMaterial {
-  const opts = trans
-    ? { color, roughness: 0.1, transparent: true, opacity: 0.5, depthWrite: false }
-    : { color, roughness: 0.3, metalness: 0 };
-  return withFixedColors(physical ? new MeshPhysicalMaterial(opts) : new MeshStandardMaterial(opts));
-}
-
-/**
- * Let per-vertex fixed colors override the main/instance color, so printed faces
- * and yellow hands survive recoloring. Attribute alpha 1 (or no attribute) = main color.
- */
-export function withFixedColors<T extends MeshStandardMaterial>(mat: T): T {
-  mat.onBeforeCompile = (shader) => {
-    shader.vertexShader = shader.vertexShader
-      .replace('#include <common>', '#include <common>\nattribute vec4 fixedColor;\nvarying vec4 vFixedColor;')
-      .replace('#include <begin_vertex>', '#include <begin_vertex>\nvFixedColor = fixedColor;');
-    shader.fragmentShader = shader.fragmentShader
-      .replace('#include <common>', '#include <common>\nvarying vec4 vFixedColor;')
-      .replace('#include <color_fragment>', '#include <color_fragment>\ndiffuseColor.rgb = mix(vFixedColor.rgb, diffuseColor.rgb, vFixedColor.a);');
-  };
-  mat.customProgramCacheKey = () => 'stacker-fixed-color';
-  return mat;
 }
 
 /** Baseplate stud, base at y = 0 (LDraw proportions: Ø 12 LDU, 4 LDU tall). */

@@ -29,6 +29,7 @@ import {
   NoToneMapping,
   Object3D,
   PCFShadowMap,
+  PMREMGenerator,
   PlaneGeometry,
   Quaternion,
   SphereGeometry,
@@ -36,9 +37,10 @@ import {
   Vector3,
   VisibilityState,
 } from '@iwsdk/core';
-import type { ToneMapping } from '@iwsdk/core';
+import type { Material, Texture, ToneMapping } from '@iwsdk/core';
 import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js';
-import { blockMaterial, dims, isSymmetric, Library, studGeometry, TABS } from './blocks.js';
+import { dims, isSymmetric, Library, studGeometry, TABS } from './blocks.js';
+import { ENVS, finishIndex, FINISHES, makeBackdrop, makeEnvScene, makeFinish, paintBackdrop, STYLES } from './look.js';
 
 // ---- Platform (world meters ÷ the Size scale = platform-local units) ----
 const PLATE_T = 0.008;
@@ -94,47 +96,43 @@ interface SliderDef {
 }
 const pct = (v: number) => `${Math.round(v * 100)}%`;
 const deg = (v: number) => `${Math.round(v)}°`;
+// Styles set all of these; the sliders then fine-tune the chosen style.
 const SLIDERS: SliderDef[] = [
   { id: 'size', label: 'Size', min: 0.75, max: 3, step: 0.05, fmt: (v) => `${v.toFixed(2)}×` },
+  { id: 'backdrop', label: 'Room ↔ virtual', min: 0, max: 1, step: 0.05, fmt: pct },
+  { id: 'envStrength', label: 'Reflections', min: 0, max: 3, step: 0.05, fmt: (v) => v.toFixed(2) },
+  { id: 'envTurn', label: 'Reflection turn', min: 0, max: 360, step: 5, fmt: deg },
   { id: 'exposure', label: 'Exposure', min: 0.3, max: 2.5, step: 0.05, fmt: (v) => v.toFixed(2) },
   { id: 'key', label: 'Key light', min: 0, max: 6, step: 0.1, fmt: (v) => v.toFixed(1) },
   { id: 'keyAz', label: 'Key angle', min: -180, max: 180, step: 5, fmt: deg },
   { id: 'keyEl', label: 'Key height', min: 5, max: 90, step: 1, fmt: deg },
-  { id: 'warmth', label: 'Key warmth', min: -1, max: 1, step: 0.05, fmt: (v) => (v > 0 ? `warm ${pct(v)}` : v < 0 ? `cool ${pct(-v)}` : 'neutral') },
+  { id: 'warmth', label: 'Key warmth', min: -1, max: 1, step: 0.05, fmt: (v) => (v > 0 ? `warm ${pct(v)}` : v < 0 ? `cool ${pct(-v)}` : 'as styled') },
   { id: 'fill', label: 'Fill light', min: 0, max: 2, step: 0.05, fmt: (v) => v.toFixed(2) },
-  { id: 'env', label: 'Reflections', min: 0, max: 3, step: 0.05, fmt: (v) => v.toFixed(2) },
-  { id: 'envRot', label: 'Reflection turn', min: 0, max: 360, step: 5, fmt: deg },
-  { id: 'rough', label: 'Roughness', min: 0, max: 1, step: 0.01, fmt: pct },
-  { id: 'metal', label: 'Metalness', min: 0, max: 1, step: 0.01, fmt: pct },
-  { id: 'clearcoat', label: 'Clearcoat*', min: 0, max: 1, step: 0.01, fmt: pct },
-  { id: 'ccRough', label: 'Coat roughness*', min: 0, max: 1, step: 0.01, fmt: pct },
-  { id: 'trans', label: 'See-through', min: 0.1, max: 1, step: 0.01, fmt: pct },
-  { id: 'plate', label: 'Plate brightness', min: 0.2, max: 1.6, step: 0.05, fmt: pct },
-  { id: 'plateRough', label: 'Plate roughness', min: 0, max: 1, step: 0.01, fmt: pct },
-  { id: 'shadow', label: 'Shadow strength', min: 0, max: 1, step: 0.05, fmt: pct },
+  { id: 'shadow', label: 'Shadows', min: 0, max: 1, step: 0.05, fmt: pct },
   { id: 'shadowSoft', label: 'Shadow softness', min: 0, max: 6, step: 0.25, fmt: (v) => v.toFixed(2) },
+  { id: 'plate', label: 'Plate brightness', min: 0.2, max: 1.6, step: 0.05, fmt: pct },
   { id: 'foveation', label: 'Foveation', min: 0, max: 1, step: 0.05, fmt: pct },
 ];
-const DEFAULTS: Record<string, number> = {
-  exposure: 1.05,
-  key: 2.4,
-  keyAz: -40,
-  keyEl: 55,
-  warmth: 0.3,
-  fill: 0.35,
-  env: 1,
-  envRot: 0,
-  rough: 0.3,
-  metal: 0,
-  clearcoat: 0,
-  ccRough: 0.1,
-  trans: 0.5,
-  plate: 1,
-  plateRough: 0.5,
-  shadow: 0.8,
-  shadowSoft: 1,
-  foveation: 1,
-};
+
+/** Slider values a style implies. */
+function styleValues(k: number): Record<string, number> {
+  const st = STYLES[k];
+  return {
+    backdrop: st.backdropAmount,
+    envStrength: st.envStrength,
+    envTurn: st.envTurn,
+    exposure: st.exposure,
+    key: st.key.strength,
+    keyAz: st.key.angle,
+    keyEl: st.key.height,
+    warmth: 0,
+    fill: st.fill.strength,
+    shadow: st.shadow,
+    shadowSoft: st.softness,
+    plate: 1,
+    foveation: 1,
+  };
+}
 const TONES: Array<[string, ToneMapping]> = [
   ['Neutral', NeutralToneMapping],
   ['ACES', ACESFilmicToneMapping],
@@ -160,12 +158,14 @@ interface Placement {
 interface Placed extends Placement {
   part: number;
   color: number;
+  finish: number;
   slot: number;
   batch: string;
   mi?: Matrix4;
 }
 
 interface Batch {
+  key: string; // `${part}|${finish}`
   entity: Entity;
   mesh: InstancedMesh;
   records: Placed[];
@@ -176,6 +176,7 @@ interface Loose {
   mesh: Mesh;
   part: number;
   color: number;
+  finish: number;
 }
 
 interface Piece {
@@ -213,7 +214,7 @@ interface Panel {
 
 interface UiItem {
   id: string;
-  kind: 'button' | 'tab' | 'swatch' | 'cell' | 'slider' | 'label';
+  kind: 'button' | 'tab' | 'swatch' | 'cell' | 'slider' | 'label' | 'finish';
   value: number;
   x: number;
   y: number;
@@ -309,11 +310,14 @@ const DUP_BTNS: Btn[] = ['a', 'mid'];
 export class StackerSystem extends createSystem({}) {
   private lib!: Library;
   private ready = false;
-  private physical = false;
-  private mats!: MeshStandardMaterial[];
   private colors!: Color[];
-  private opaqueMat!: MeshStandardMaterial;
-  private transMat!: MeshStandardMaterial;
+  private matCache = new Map<string, Material>();
+  private finish = 0; // finish for new blocks
+  private style = 0;
+  private envId = 'room';
+  private envTex: Texture | null = null;
+  private envCache = new Map<string, Texture>();
+  private backdrop!: Mesh;
   private plateMat!: MeshStandardMaterial;
   private edgeGeos = new Map<number, BufferGeometry>();
   private ghostLineMat!: LineBasicMaterial;
@@ -323,7 +327,7 @@ export class StackerSystem extends createSystem({}) {
   private time = 0;
 
   // Look & render
-  private visual: Record<string, number> = { ...DEFAULTS };
+  private visual: Record<string, number> = styleValues(0);
   private tone = 0;
   private instructions: Instructions = 'ghosts';
   private hemi!: HemisphereLight;
@@ -464,19 +468,28 @@ export class StackerSystem extends createSystem({}) {
       this.lib = lib;
       this.colors = lib.linearColors();
       this.color = lib.colorIndex.get(4) ?? 0;
-      const v = this.readStore('stacker.visual') as { visual?: Record<string, number>; tone?: number; physical?: boolean; instructions?: Instructions } | null;
-      if (v) {
-        Object.assign(this.visual, v.visual ?? {});
-        this.tone = v.tone ?? 0;
-        this.physical = !!v.physical;
-        this.instructions = v.instructions ?? 'ghosts';
-      }
-      this.makeMaterials();
+      const v = this.readStore('stacker.look') as {
+        style?: number;
+        visual?: Record<string, number>;
+        tone?: number;
+        env?: string;
+        finish?: number;
+        instructions?: Instructions;
+      } | null;
+      this.style = Math.min(STYLES.length - 1, v?.style ?? 0);
+      this.visual = { ...styleValues(this.style), ...(v?.visual ?? {}) };
+      this.tone = v?.tone ?? STYLES[this.style].tone;
+      this.envId = v?.env ?? STYLES[this.style].env;
+      this.finish = v?.finish ?? 0;
+      this.instructions = v?.instructions ?? 'ghosts';
+      this.backdrop = makeBackdrop();
+      this.world.createTransformEntity(this.backdrop, { persistent: true });
       this.buildConnTables();
       this.hands = HANDS.map((hand) => this.createHand(hand));
       this.buildPlatform();
-      this.library = this.createPanel('library', 0.32, 0.46, true);
-      this.settings = this.createPanel('settings', 0.46, 0.4, false);
+      this.library = this.createPanel('library', 0.32, 0.52, true);
+      this.settings = this.createPanel('settings', 0.46, 0.57, false);
+      this.setEnv(this.envId);
       this.layoutLibrary();
       this.layoutSettings();
       this.placeDefault(new Vector3(0, 0.8, -0.5), 0);
@@ -490,6 +503,8 @@ export class StackerSystem extends createSystem({}) {
   update(delta: number): void {
     if (!this.ready) return;
     this.time += delta;
+    // Keep our reflection environment in place (IWSDK's own IBL may reassert itself).
+    if (this.envTex && this.scene.environment !== this.envTex) this.scene.environment = this.envTex;
     this.ghostLineMat.opacity = 0.55 + 0.4 * Math.sin(this.time * 5);
     this.tickStats(delta);
     if (this.recenterDelay >= 0) {
@@ -507,7 +522,14 @@ export class StackerSystem extends createSystem({}) {
     if (this.saveTimer > 1) {
       if (this.dirty) this.writeStore('stacker.autosave', this.serialize());
       if (this.visualDirty) {
-        this.writeStore('stacker.visual', { visual: this.visual, tone: this.tone, physical: this.physical, instructions: this.instructions });
+        this.writeStore('stacker.look', {
+          style: this.style,
+          visual: this.visual,
+          tone: this.tone,
+          env: this.envId,
+          finish: this.finish,
+          instructions: this.instructions,
+        });
       }
       this.dirty = this.visualDirty = false;
       this.saveTimer = 0;
@@ -562,60 +584,109 @@ export class StackerSystem extends createSystem({}) {
     this.keyLight.target.position.copy(center);
   }
 
-  private makeMaterials(): void {
-    this.mats = this.lib.materials(this.physical);
-    this.opaqueMat = blockMaterial(this.physical, 0xffffff, false);
-    this.transMat = blockMaterial(this.physical, 0xffffff, true);
+  /**
+   * The material for a finish and color (color null = white, tinted per instance for
+   * placed blocks). See-through palette colors are shown as glass when the finish is
+   * opaque. A style can force one finish, and one color, on every block.
+   */
+  private matFor(finish: number, color: number | null, raw = false): Material {
+    const st = raw ? STYLES[0] : STYLES[this.style];
+    let f = st.finish ? finishIndex(st.finish) : finish;
+    if (color !== null && this.lib.isTrans(color) && !FINISHES[f].trans && !st.solid) f = finishIndex('glass');
+    const key = `${f}|${color ?? '*'}|${st.solid ?? ''}|${st.finish ?? ''}`;
+    let m = this.matCache.get(key);
+    if (!m) {
+      m = makeFinish(FINISHES[f], color === null ? null : this.colors[color], st.solid ? new Color(st.solid) : null);
+      this.matCache.set(key, m);
+      this.tuneMaterial(m);
+    }
+    return m;
   }
 
-  /** Swap every block material between standard and physical (clearcoat) shading. */
-  private switchMaterialModel(physical: boolean): void {
-    this.physical = physical;
-    const old = [...this.mats, this.opaqueMat, this.transMat];
-    this.makeMaterials();
-    for (const b of this.batches.values()) b.mesh.material = b.mesh.material === old[old.length - 1] ? this.transMat : this.opaqueMat;
-    for (const l of this.loose) l.mesh.material = this.mats[l.color];
-    for (const p of this.poofs) {
-      const m = p.entity.object3D as Mesh;
-      const k = old.indexOf(m.material as MeshStandardMaterial);
-      if (k >= 0 && k < this.mats.length) m.material = this.mats[k];
+  /** The finish a block actually renders with (see-through colors become glass). */
+  private shownFinish(finish: number, color: number): number {
+    const st = STYLES[this.style];
+    if (st.finish) return finishIndex(st.finish);
+    return this.lib.isTrans(color) && !FINISHES[finish].trans ? finishIndex('glass') : finish;
+  }
+
+  private isSeeThrough(finish: number, color: number): boolean {
+    return !!FINISHES[this.shownFinish(finish, color)].trans;
+  }
+
+  private tuneMaterial(m: Material): void {
+    const std = m as MeshStandardMaterial;
+    if ('envMapIntensity' in std) std.envMapIntensity = (std.userData.envBase ?? 1) * this.visual.envStrength;
+  }
+
+  /** Re-point every block, preview and swatch at the right material (after a style or finish change). */
+  private refreshMaterials(): void {
+    for (const b of this.batches.values()) {
+      const fin = Number(b.key.split('|')[1]);
+      b.mesh.material = this.matFor(fin, null);
+      b.mesh.castShadow = !FINISHES[this.shownFinishKey(fin)].trans;
     }
+    for (const l of this.loose) l.mesh.material = this.matFor(l.finish, l.color);
     this.layoutLibrary();
     if (this.manual && this.kit) this.showPage(this.kit.page);
-    for (const m of old) m.dispose();
-    this.applyVisuals();
   }
 
-  /** Push every look & render setting into lights, materials and the renderer. */
+  private shownFinishKey(fin: number): number {
+    const st = STYLES[this.style];
+    return st.finish ? finishIndex(st.finish) : fin;
+  }
+
+  /** Pick an art direction: environment, backdrop, lights, camera, plate, block overrides. */
+  private applyStyle(k: number): void {
+    this.style = k;
+    const st = STYLES[k];
+    this.visual = { ...styleValues(k), size: this.scale };
+    this.tone = st.tone;
+    this.setEnv(st.env);
+    this.refreshMaterials();
+    this.applyVisuals();
+    this.visualDirty = true;
+    this.redrawUi();
+  }
+
+  private setEnv(id: string): void {
+    this.envId = id;
+    let tex = this.envCache.get(id);
+    if (!tex) {
+      const pmrem = new PMREMGenerator(this.renderer);
+      tex = pmrem.fromScene(makeEnvScene(id), 0.04).texture;
+      pmrem.dispose();
+      this.envCache.set(id, tex);
+    }
+    this.envTex = tex;
+    this.scene.environment = tex;
+    this.visualDirty = true;
+  }
+
+  /** Push the style plus slider tweaks into lights, environment, backdrop, plate and renderer. */
   private applyVisuals(): void {
     const v = this.visual;
+    const st = STYLES[this.style];
     this.renderer.toneMapping = TONES[this.tone][1];
     this.renderer.toneMappingExposure = v.exposure;
     this.keyLight.intensity = v.key;
-    const warm = new Color(0xffd9ad);
-    const cool = new Color(0xcfe0ff);
-    this.keyLight.color.set(0xffffff).lerp(v.warmth >= 0 ? warm : cool, Math.abs(v.warmth));
+    this.keyLight.color.set(st.key.color).lerp(new Color(v.warmth >= 0 ? 0xffc88a : 0xbcd4ff), Math.abs(v.warmth));
+    this.hemi.color.set(st.fill.sky);
+    this.hemi.groundColor.set(st.fill.ground);
     this.hemi.intensity = v.fill;
     const shadows = v.shadow > 0;
     this.keyLight.castShadow = shadows;
     this.renderer.shadowMap.enabled = shadows;
     this.keyLight.shadow.intensity = v.shadow;
     this.keyLight.shadow.radius = v.shadowSoft;
-    this.scene.environmentRotation.set(0, (v.envRot * Math.PI) / 180, 0);
-    for (const m of [...this.mats, this.opaqueMat, this.transMat]) {
-      m.roughness = m.transparent ? Math.min(v.rough, 0.15) : v.rough;
-      m.metalness = v.metal;
-      m.envMapIntensity = v.env;
-      if (m.transparent) m.opacity = v.trans;
-      if (m instanceof MeshPhysicalMaterial) {
-        m.clearcoat = v.clearcoat;
-        m.clearcoatRoughness = v.ccRough;
-      }
-    }
+    this.scene.environmentRotation.set(0, (v.envTurn * Math.PI) / 180, 0);
+    for (const m of this.matCache.values()) this.tuneMaterial(m);
+    paintBackdrop(this.backdrop, st.backdrop[0], st.backdrop[1]);
+    (this.backdrop.material as MeshBasicMaterial).opacity = v.backdrop;
+    this.backdrop.visible = v.backdrop > 0.01;
     if (this.plateMat) {
-      this.plateMat.color.set(0x237841).multiplyScalar(v.plate);
-      this.plateMat.roughness = v.plateRough;
-      this.plateMat.envMapIntensity = v.env;
+      this.plateMat.color.set(st.plate).multiplyScalar(v.plate);
+      this.plateMat.envMapIntensity = v.envStrength;
     }
     if (this.renderer.xr.isPresenting) this.renderer.xr.setFoveation(v.foveation);
     if (this.root) this.aimKeyLight();
@@ -629,7 +700,6 @@ export class StackerSystem extends createSystem({}) {
     } else {
       if (this.visual[id] === value) return;
       this.visual[id] = value;
-      if ((id === 'clearcoat' || id === 'ccRough') && value > 0 && !this.physical) this.switchMaterialModel(true);
       this.applyVisuals();
       this.visualDirty = true;
     }
@@ -887,12 +957,29 @@ export class StackerSystem extends createSystem({}) {
       const inRow = Math.min(swPer, this.lib.colors.length - Math.floor(k / swPer) * swPer);
       const x = ((k % swPer) - (inRow - 1) / 2) * sw;
       const yy = yb + 0.01 + row * 0.02;
-      const mesh = new Mesh(swatchGeo, this.mats[k]);
+      const mesh = new Mesh(swatchGeo, this.matFor(finishIndex('satin'), k, true));
       mesh.position.set(x, yy, 0.004);
       this.addContent(p, mesh);
       p.items.push({ id: `swatch:${k}`, kind: 'swatch', value: k, x, y: yy, w: 0.018, h: 0.019, mesh, panel: p, hover: false });
     });
     yb += swRows * 0.02 + GAP;
+    // Finishes: what the next block is made of (and, with a selection, restyles it).
+    const fw = 0.047;
+    const fPer = Math.max(1, Math.floor((inner + GAP) / (fw + GAP)));
+    const fRows = Math.ceil(FINISHES.length / fPer);
+    const ball = new SphereGeometry(0.0055, 20, 12);
+    FINISHES.forEach((_, k) => {
+      const row = fRows - 1 - Math.floor(k / fPer);
+      const col = k % fPer;
+      const x = left + fw / 2 + col * (fw + GAP);
+      const yy = yb + 0.012 + row * (0.024 + GAP);
+      const item = this.addUi(p, `finish:${k}`, 'finish', k, x, yy, fw, 0.024);
+      const sphere = new Mesh(ball, this.matFor(k, this.color, true));
+      sphere.position.set(x - fw / 2 + 0.008, yy, 0.007);
+      this.addContent(p, sphere);
+      item.preview = sphere;
+    });
+    yb += fRows * (0.024 + GAP);
     const rowY = yb + 0.013;
     this.addUi(p, 'row:left', 'button', 0, left + 0.035, rowY, 0.07, 0.026);
     this.addUi(p, 'row:mid', 'button', 0, 0, rowY, Math.min(0.14, inner - 0.16), 0.026);
@@ -907,7 +994,7 @@ export class StackerSystem extends createSystem({}) {
       const x = -gridW / 2 + CELL_W / 2 + (k % cols) * (CELL_W + GAP);
       const yy = y - CELL_H / 2 - Math.floor(k / cols) * (CELL_H + GAP);
       const item = this.addUi(p, `cell:${k}`, 'cell', k, x, yy, CELL_W, CELL_H);
-      const preview = new Mesh(this.lib.geometries[0], this.mats[this.color]);
+      const preview = new Mesh(this.lib.geometries[0], this.matFor(this.finish, this.color, true));
       preview.name = 'CatalogItem';
       preview.position.set(x, yy + 0.007, 0.022);
       this.addContent(p, preview);
@@ -936,9 +1023,17 @@ export class StackerSystem extends createSystem({}) {
       ids.forEach((id, k) => this.addUi(p, id, 'button', 0, left + w / 2 + k * (w + GAP), y - 0.012, w, 0.024));
       y -= 0.024 + GAP;
     };
-    rowItems(['hz', 'stress', 'recenter', 'clear', 'reset']);
-    rowItems(['tone', 'model', 'instructions']);
-    y -= GAP;
+    rowItems(['hz', 'stress', 'recenter', 'clear', 'instructions']);
+    const heading = (id: string) => {
+      this.addUi(p, `head:${id}`, 'label', 0, 0, y - 0.008, inner, 0.016);
+      y -= 0.016 + GAP;
+    };
+    heading('style');
+    for (let r = 0; r < STYLES.length / 4; r++) rowItems(STYLES.slice(r * 4, r * 4 + 4).map((_, k) => `style:${r * 4 + k}`));
+    heading('env');
+    rowItems(ENVS.map((e) => `env:${e.id}`));
+    rowItems(['tone', 'reset']);
+    heading('tune');
     const colW = (inner - GAP) / 2;
     const perCol = Math.ceil(SLIDERS.length / 2);
     SLIDERS.forEach((def, k) => {
@@ -999,7 +1094,7 @@ export class StackerSystem extends createSystem({}) {
       mesh.geometry = this.lib.geometries[part];
       const extent = Math.max(def.w * dims.pitch, def.d * dims.pitch, def.h * dims.unit);
       mesh.scale.setScalar(Math.min(4, PREVIEW_FIT / extent));
-      mesh.material = figs ? this.mats[this.colorOf(this.lib.minifigs.presets[item.value].torso)] : this.mats[this.color];
+      mesh.material = this.matFor(this.finish, figs ? this.colorOf(this.lib.minifigs.presets[item.value].torso) : this.color, true);
     }
     for (const item of this.library.items) if (item.kind !== 'swatch') this.drawUi(item);
   }
@@ -1010,7 +1105,8 @@ export class StackerSystem extends createSystem({}) {
 
   private selectColor(k: number): void {
     this.color = k;
-    if (this.tabName() !== 'Minifigs') for (const c of this.cells()) c.preview!.material = this.mats[k];
+    if (this.tabName() !== 'Minifigs') for (const c of this.cells()) c.preview!.material = this.matFor(this.finish, k, true);
+    for (const item of this.library.items) if (item.kind === 'finish') item.preview!.material = this.matFor(item.value, k, true);
     for (const item of this.library.items) {
       if (item.kind !== 'swatch') continue;
       const on = item.value === k;
@@ -1049,11 +1145,15 @@ export class StackerSystem extends createSystem({}) {
       case 'clear':
         return 'Clear';
       case 'reset':
-        return 'Reset look';
+        return `Reset ${STYLES[this.style].name}`;
       case 'tone':
         return `Tone: ${TONES[this.tone][0]}`;
-      case 'model':
-        return this.physical ? 'Physical (coat)' : 'Standard';
+      case 'head:style':
+        return 'Style';
+      case 'head:env':
+        return 'Environment';
+      case 'head:tune':
+        return 'Fine-tune';
       case 'instructions':
         return `Guide: ${{ ghosts: 'Ghosts', manual: 'Manual', both: 'Both' }[this.instructions]}`;
       case 'tool:build':
@@ -1096,6 +1196,9 @@ export class StackerSystem extends createSystem({}) {
       return `${name} ${this.page + 1}/${this.pageCount()}`;
     }
     if (item.kind === 'tab') return TAB_NAMES[item.value];
+    if (item.kind === 'finish') return FINISHES[item.value].label;
+    if (item.id.startsWith('style:')) return STYLES[Number(item.id.slice(6))].name;
+    if (item.id.startsWith('env:')) return ENVS.find((e) => e.id === item.id.slice(4))!.label;
     if (item.kind === 'cell') {
       if (name === 'Kits') return KITS[item.value] ? `${KITS[item.value].title} · ${KITS[item.value].pieces} pcs` : '';
       if (name === 'Saves') return item.value < SLOTS ? this.slotInfo(item.value) : '';
@@ -1108,6 +1211,9 @@ export class StackerSystem extends createSystem({}) {
 
   private uiSelected(item: UiItem): boolean {
     if (item.kind === 'tab') return item.value === this.tab;
+    if (item.kind === 'finish') return item.value === this.finish;
+    if (item.id === `style:${this.style}`) return true;
+    if (item.id === `env:${this.envId}`) return true;
     if (item.id === `tool:${this.tool}`) return true;
     if (item.kind === 'cell' && this.tabName() === 'Saves') return item.value === this.slot;
     if (item.kind === 'cell' && this.tabName() === 'Kits') return this.kit?.id === KITS[item.value]?.id;
@@ -1172,11 +1278,14 @@ export class StackerSystem extends createSystem({}) {
         ctx.roundRect(3, 3, width - 6, height - 6, height * 0.3);
         ctx.fill();
       }
-      ctx.fillStyle = passive && item.id === 'credits' ? '#7c8699' : '#ffffff';
-      ctx.font = `600 ${Math.round(height * (item.id === 'credits' ? 0.6 : 0.42))}px system-ui, sans-serif`;
-      ctx.textAlign = 'center';
+      ctx.fillStyle = passive && item.id === 'credits' ? '#7c8699' : passive ? '#8b95a8' : '#ffffff';
+      const heading = passive && item.id.startsWith('head:');
+      ctx.font = `${heading ? 700 : 600} ${Math.round(height * (item.id === 'credits' ? 0.6 : heading ? 0.6 : 0.42))}px system-ui, sans-serif`;
+      ctx.textAlign = item.kind === 'finish' || heading ? 'left' : 'center';
       ctx.textBaseline = 'middle';
-      ctx.fillText(label, width / 2, height / 2 + 2, width - 12);
+      // Finish chips leave room on the left for their material sphere.
+      const x = item.kind === 'finish' ? height * 1.15 : heading ? 4 : width / 2;
+      ctx.fillText(label, x, height / 2 + 2, width - x - 6);
     }
     item.tex.needsUpdate = true;
   }
@@ -1200,7 +1309,13 @@ export class StackerSystem extends createSystem({}) {
     if (item.kind === 'label') return;
     this.tick(0.25);
     if (item.kind === 'tab') this.showTab(item.value);
-    else if (item.kind === 'swatch') {
+    else if (item.kind === 'finish') {
+      this.finish = item.value;
+      this.visualDirty = true;
+      if (this.selection.size) for (const rec of [...this.selection]) this.recolor([rec], rec.color, item.value);
+      for (const c of this.cells()) if (c.preview && this.tabName() !== 'Minifigs') c.preview.material = this.matFor(this.finish, this.color, true);
+      this.redrawUi((u) => u.kind === 'finish');
+    } else if (item.kind === 'swatch') {
       this.selectColor(item.value);
       if (this.selection.size) this.recolor([...this.selection], item.value);
     } else if (item.kind === 'cell') this.pressCell(item.value);
@@ -1259,19 +1374,11 @@ export class StackerSystem extends createSystem({}) {
         this.clearPlaced();
         break;
       case 'reset':
-        this.visual = { ...DEFAULTS };
-        this.tone = 0;
-        if (this.physical) this.switchMaterialModel(false);
-        this.applyVisuals();
-        this.visualDirty = true;
+        this.applyStyle(this.style);
         break;
       case 'tone':
         this.tone = (this.tone + 1) % TONES.length;
         this.applyVisuals();
-        this.visualDirty = true;
-        break;
-      case 'model':
-        this.switchMaterialModel(!this.physical);
         this.visualDirty = true;
         break;
       case 'instructions':
@@ -1281,6 +1388,13 @@ export class StackerSystem extends createSystem({}) {
         break;
       case 'showcase':
         this.showcase();
+        break;
+      default:
+        if (id.startsWith('style:')) this.applyStyle(Number(id.slice(6)));
+        else if (id.startsWith('env:')) {
+          this.setEnv(id.slice(4));
+          this.applyVisuals();
+        }
         break;
       case 'tool:build':
       case 'tool:select':
@@ -1475,25 +1589,28 @@ export class StackerSystem extends createSystem({}) {
   }
 
   private batchFor(rec: Placed): Batch {
-    const key = `${rec.part}|${this.lib.isTrans(rec.color) ? 't' : 'o'}`;
+    // See-through palette colors batch as glass, so each batch has one material.
+    const fin = this.lib.isTrans(rec.color) && !FINISHES[rec.finish].trans ? finishIndex('glass') : rec.finish;
+    const key = `${rec.part}|${fin}`;
     rec.batch = key;
     let b = this.batches.get(key);
     if (!b) {
-      b = this.createBatch(rec.part, key.endsWith('t'), 16);
+      b = this.createBatch(key, 16);
       this.batches.set(key, b);
     }
     if (b.records.length >= b.mesh.instanceMatrix.count) {
-      b = this.createBatch(rec.part, key.endsWith('t'), b.mesh.instanceMatrix.count * 2, b);
+      b = this.createBatch(key, b.mesh.instanceMatrix.count * 2, b);
       this.batches.set(key, b);
     }
     return b;
   }
 
-  private createBatch(part: number, trans: boolean, capacity: number, from?: Batch): Batch {
-    const mesh = new InstancedMesh(this.lib.geometries[part], trans ? this.transMat : this.opaqueMat, capacity);
+  private createBatch(key: string, capacity: number, from?: Batch): Batch {
+    const [part, fin] = key.split('|').map(Number);
+    const mesh = new InstancedMesh(this.lib.geometries[part], this.matFor(fin, null), capacity);
     mesh.name = 'PlacedBlocks';
     mesh.frustumCulled = false;
-    mesh.castShadow = !trans;
+    mesh.castShadow = !FINISHES[this.shownFinishKey(fin)].trans;
     mesh.receiveShadow = true;
     mesh.setColorAt(0, this.colors[0]);
     mesh.count = 0;
@@ -1504,7 +1621,7 @@ export class StackerSystem extends createSystem({}) {
       from.entity.destroy();
     }
     const entity = this.child(this.root, mesh);
-    return { entity, mesh, records: from?.records ?? [] };
+    return { key, entity, mesh, records: from?.records ?? [] };
   }
 
   private writeInstance(batch: Batch, rec: Placed): void {
@@ -1560,11 +1677,12 @@ export class StackerSystem extends createSystem({}) {
     this.dirty = true;
   }
 
-  private recolor(recs: Placed[], color: number): void {
+  private recolor(recs: Placed[], color: number, finish?: number): void {
     for (const rec of recs) {
       const selected = this.selection.has(rec);
       this.removePlaced(rec);
       rec.color = color;
+      if (finish !== undefined) rec.finish = finish;
       this.addPlaced(rec);
       if (selected) this.selection.add(rec);
     }
@@ -1586,8 +1704,8 @@ export class StackerSystem extends createSystem({}) {
     return e;
   }
 
-  private makeRec(part: number, color: number, m: Matrix4, target?: Placed): Placed {
-    return { part, color, m, target, slot: -1, batch: '' };
+  private makeRec(part: number, color: number, m: Matrix4, target?: Placed, finish = 0): Placed {
+    return { part, color, finish, m, target, slot: -1, batch: '' };
   }
 
   /** Transform for a block on the stud grid: cell (i, j), height in half plates, quarter turns. */
@@ -1605,16 +1723,16 @@ export class StackerSystem extends createSystem({}) {
 
   // ================================================================ loose blocks
 
-  private spawnLoose(part: number, color: number, pos: Vector3, quat: Quaternion): Loose {
-    const mesh = new Mesh(this.lib.geometries[part], this.mats[color]);
+  private spawnLoose(part: number, color: number, pos: Vector3, quat: Quaternion, finish = this.finish): Loose {
+    const mesh = new Mesh(this.lib.geometries[part], this.matFor(finish, color));
     mesh.name = 'Block';
-    mesh.castShadow = !this.lib.isTrans(color);
+    mesh.castShadow = !this.isSeeThrough(finish, color);
     mesh.receiveShadow = true;
     mesh.position.copy(pos);
     mesh.quaternion.copy(quat);
     mesh.scale.setScalar(this.scale);
     const entity = this.world.createTransformEntity(mesh);
-    const l = { entity, mesh, part, color };
+    const l = { entity, mesh, part, color, finish };
     this.loose.push(l);
     return l;
   }
@@ -1667,7 +1785,7 @@ export class StackerSystem extends createSystem({}) {
     return info.map(({ part, code, bottom, h }) => {
       const dl = Math.round((feet - bottom) / 4);
       const y = (dl + h / 2 - info[0].h / 2) * u;
-      const block = this.spawnLoose(part, this.colorOf(code), this.v1.set(0, y, 0).applyQuaternion(q).add(base), q);
+      const block = this.spawnLoose(part, this.colorOf(code), this.v1.set(0, y, 0).applyQuaternion(q).add(base), q, this.finish);
       return { block, offPos: new Vector3(), offQuat: new Quaternion() };
     });
   }
@@ -2354,7 +2472,7 @@ export class StackerSystem extends createSystem({}) {
       this.holdPlaced(h, btn, t.placed!, group, true);
     } else if (t.kind === 'loose') {
       const l = t.loose!;
-      this.holdLoose(h, btn, [this.spawnLoose(l.part, l.color, l.mesh.position, l.mesh.quaternion)], h.targetFar);
+      this.holdLoose(h, btn, [this.spawnLoose(l.part, l.color, l.mesh.position, l.mesh.quaternion, l.finish)], h.targetFar);
     }
   }
 
@@ -2363,7 +2481,7 @@ export class StackerSystem extends createSystem({}) {
       const group = this.selection.has(t.placed!) ? [...this.selection] : [t.placed!];
       for (const rec of group) {
         this.placedWorldPose(rec, this.v1, this.q1);
-        this.dropLoose(this.spawnLoose(rec.part, rec.color, this.v1, this.q1), true);
+        this.dropLoose(this.spawnLoose(rec.part, rec.color, this.v1, this.q1, rec.finish), true);
         this.removePlaced(rec);
       }
       this.redrawUi((u) => u.id === 'deselect');
@@ -2374,12 +2492,13 @@ export class StackerSystem extends createSystem({}) {
 
   private paintTarget(t: Target | null): void {
     if (!t) return;
-    if (t.kind === 'placed' && t.placed!.color !== this.color) {
-      this.recolor([t.placed!], this.color);
+    if (t.kind === 'placed' && (t.placed!.color !== this.color || t.placed!.finish !== this.finish)) {
+      this.recolor([t.placed!], this.color, this.finish);
       this.tick(0.15);
-    } else if (t.kind === 'loose' && t.loose!.color !== this.color) {
+    } else if (t.kind === 'loose' && (t.loose!.color !== this.color || t.loose!.finish !== this.finish)) {
       t.loose!.color = this.color;
-      t.loose!.mesh.material = this.mats[this.color];
+      t.loose!.finish = this.finish;
+      t.loose!.mesh.material = this.matFor(this.finish, this.color);
       this.tick(0.15);
     }
   }
@@ -2392,7 +2511,7 @@ export class StackerSystem extends createSystem({}) {
     const recs = [anchor, ...group.filter((r) => r !== anchor)];
     const pieces: Piece[] = recs.map((rec) => {
       this.placedWorldPose(rec, this.v1, this.q1);
-      return { block: this.spawnLoose(rec.part, rec.color, this.v1, this.q1), offPos: new Vector3(), offQuat: new Quaternion() };
+      return { block: this.spawnLoose(rec.part, rec.color, this.v1, this.q1, rec.finish), offPos: new Vector3(), offQuat: new Quaternion() };
     });
     h.fromSelection = group.length > 1 || this.selection.has(anchor);
     if (!duplicate) for (const rec of recs) this.removePlaced(rec);
@@ -2416,7 +2535,7 @@ export class StackerSystem extends createSystem({}) {
     for (const p of pieces) {
       p.offQuat.copy(this.q1).multiply(p.block.mesh.quaternion);
       p.offPos.copy(p.block.mesh.position).sub(anchor.position).applyQuaternion(this.q1);
-      p.block.mesh.castShadow = !this.lib.isTrans(p.block.color);
+      p.block.mesh.castShadow = !this.isSeeThrough(p.block.finish, p.block.color);
     }
     // Held like a real object: the block keeps its rotation relative to the hand.
     this.q1.copy(h.quat).invert();
@@ -2522,7 +2641,7 @@ export class StackerSystem extends createSystem({}) {
       return;
     }
     if (this.computeSnap(pieces)) {
-      const recs = this.snapOut.map((o, k) => this.makeRec(pieces[k].block.part, pieces[k].block.color, o.m, o.target));
+      const recs = this.snapOut.map((o, k) => this.makeRec(pieces[k].block.part, pieces[k].block.color, o.m, o.target, pieces[k].block.finish));
       if (h.fromSelection) this.selection.clear();
       recs.forEach((rec, k) => {
         const m = pieces[k].block.mesh;
@@ -2911,7 +3030,7 @@ export class StackerSystem extends createSystem({}) {
     entries.forEach((c, k) => {
       const x = -p.w / 2 + MARGIN + slotW / 2 + k * slotW;
       const def = this.lib.parts[c.part];
-      const mesh = new Mesh(this.lib.geometries[c.part], this.mats[c.color]);
+      const mesh = new Mesh(this.lib.geometries[c.part], this.matFor(0, c.color));
       const extent = Math.max(def.w * dims.pitch, def.d * dims.pitch, def.h * dims.unit);
       mesh.scale.setScalar(Math.min(3, 0.026 / extent));
       mesh.position.set(x, cy + 0.005, 0.015);
@@ -2963,7 +3082,7 @@ export class StackerSystem extends createSystem({}) {
     model.position.set(-((min.x + max.x) / 2) * (fit / size), -((min.y + max.y) / 2) * (fit / size), -((min.z + max.z) / 2) * (fit / size));
     spin.add(model);
     for (const { rec, current } of recs) {
-      const mesh = new Mesh(this.lib.geometries[rec.part], this.mats[rec.color]);
+      const mesh = new Mesh(this.lib.geometries[rec.part], this.matFor(rec.finish, rec.color));
       this.localMatrix(rec, mesh.matrix);
       mesh.matrix.decompose(mesh.position, mesh.quaternion, mesh.scale);
       model.add(mesh);
@@ -3055,7 +3174,7 @@ export class StackerSystem extends createSystem({}) {
         rowDepth = 0;
       }
       const pos = new Vector3(x + w / 2, (def.h * dims.unit * S) / 2 + 0.002, z + d / 2);
-      const block = this.spawnLoose(it.part, it.color, pos, this.q1.identity());
+      const block = this.spawnLoose(it.part, it.color, pos, this.q1.identity(), 0);
       this.shelfItems.push({ block, pos });
       kit.spawned.push(block);
       x += w + gap;
@@ -3103,6 +3222,7 @@ export class StackerSystem extends createSystem({}) {
         this.lib.colors[r.color].code,
         'm',
         ...r.m.elements.map((v) => Math.round(v * 1e5) / 1e5),
+        FINISHES[r.finish].id,
       ]),
     };
   }
@@ -3133,7 +3253,8 @@ export class StackerSystem extends createSystem({}) {
       if (part === undefined) continue;
       const color = this.colorOf(code);
       if (row[2] === 'm') {
-        this.addPlaced(this.makeRec(part, color, new Matrix4().fromArray(row.slice(3) as number[])));
+        const finish = typeof row[19] === 'string' ? finishIndex(row[19]) : 0;
+        this.addPlaced(this.makeRec(part, color, new Matrix4().fromArray(row.slice(3, 19) as number[]), undefined, finish));
         continue;
       }
       // v2/v3 saves stored grid cells (v2 counted height in plates, v3 in half plates).
