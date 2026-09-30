@@ -1,0 +1,76 @@
+{
+ "presets": [
+  {
+   "name": "Classic",
+   "legs": 1,
+   "torso": 4,
+   "hat": [
+    "3901",
+    70
+   ]
+  },
+  {
+   "name": "Police",
+   "legs": 0,
+   "torso": 0,
+   "hat": [
+    "3624",
+    0
+   ]
+  },
+  {
+   "name": "Builder",
+   "legs": 1,
+   "torso": 25,
+   "hat": [
+    "3833",
+    14
+   ]
+  },
+  {
+   "name": "Astronaut",
+   "legs": 15,
+   "torso": 15,
+   "hat": [
+    "3842b",
+    15
+   ]
+  },
+  {
+   "name": "Cowboy",
+   "legs": 70,
+   "torso": 19,
+   "hat": [
+    "3629",
+    28
+   ]
+  },
+  {
+   "name": "Kid",
+   "legs": 73,
+   "torso": 27,
+   "hat": [
+    "62810",
+    0
+   ]
+  }
+ ],
+ "assembly": {
+  "legs": [
+   "3815c01",
+   32
+  ],
+  "torso": [
+   "973c01",
+   0
+  ],
+  "head": [
+   "3626cp01",
+   -24
+  ],
+  "hat": [
+   null,
+   -24
+  ]
+ }
+}

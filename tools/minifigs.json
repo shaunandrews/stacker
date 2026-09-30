@@ -1,0 +1,153 @@
+{
+ "parts": [
+  {
+   "id": "3815c01",
+   "name": "Minifig Legs",
+   "tab": "Minifigs",
+   "w": 2,
+   "d": 1,
+   "top": 0,
+   "h": 10
+  },
+  {
+   "id": "973c01",
+   "name": "Minifig Torso",
+   "tab": "Minifigs",
+   "w": 2,
+   "d": 1,
+   "top": 0,
+   "h": 8
+  },
+  {
+   "id": "3626cp01",
+   "name": "Minifig Head (Grin)",
+   "tab": "Minifigs",
+   "w": 2,
+   "d": 1,
+   "top": 0,
+   "h": 6
+  },
+  {
+   "id": "3901",
+   "name": "Hair",
+   "tab": "Minifigs",
+   "w": 2,
+   "d": 1,
+   "overlap": true
+  },
+  {
+   "id": "62810",
+   "name": "Hair Tousled",
+   "tab": "Minifigs",
+   "w": 2,
+   "d": 1,
+   "overlap": true
+  },
+  {
+   "id": "3624",
+   "name": "Police Hat",
+   "tab": "Minifigs",
+   "w": 2,
+   "d": 1,
+   "overlap": true
+  },
+  {
+   "id": "3833",
+   "name": "Construction Helmet",
+   "tab": "Minifigs",
+   "w": 2,
+   "d": 1,
+   "overlap": true
+  },
+  {
+   "id": "3629",
+   "name": "Cowboy Hat",
+   "tab": "Minifigs",
+   "w": 2,
+   "d": 1,
+   "overlap": true
+  },
+  {
+   "id": "3842b",
+   "name": "Space Helmet",
+   "tab": "Minifigs",
+   "w": 2,
+   "d": 1,
+   "overlap": true
+  }
+ ],
+ "presets": [
+  {
+   "name": "Classic",
+   "legs": 1,
+   "torso": 4,
+   "hat": [
+    "3901",
+    70
+   ]
+  },
+  {
+   "name": "Police",
+   "legs": 0,
+   "torso": 0,
+   "hat": [
+    "3624",
+    0
+   ]
+  },
+  {
+   "name": "Builder",
+   "legs": 1,
+   "torso": 25,
+   "hat": [
+    "3833",
+    14
+   ]
+  },
+  {
+   "name": "Astronaut",
+   "legs": 15,
+   "torso": 15,
+   "hat": [
+    "3842b",
+    15
+   ]
+  },
+  {
+   "name": "Cowboy",
+   "legs": 70,
+   "torso": 19,
+   "hat": [
+    "3629",
+    28
+   ]
+  },
+  {
+   "name": "Kid",
+   "legs": 73,
+   "torso": 27,
+   "hat": [
+    "62810",
+    0
+   ]
+  }
+ ],
+ "assembly": {
+  "legs": [
+   "3815c01",
+   32
+  ],
+  "torso": [
+   "973c01",
+   0
+  ],
+  "head": [
+   "3626cp01",
+   -24
+  ],
+  "hat": [
+   null,
+   -24
+  ]
+ }
+}

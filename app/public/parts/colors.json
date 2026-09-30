@@ -1,0 +1,194 @@
+[
+ {
+  "code": 15,
+  "name": "White",
+  "hex": "#f4f4f4",
+  "alpha": 1
+ },
+ {
+  "code": 71,
+  "name": "Light Bluish Grey",
+  "hex": "#969696",
+  "alpha": 1
+ },
+ {
+  "code": 72,
+  "name": "Dark Bluish Grey",
+  "hex": "#646464",
+  "alpha": 1
+ },
+ {
+  "code": 0,
+  "name": "Black",
+  "hex": "#1b2a34",
+  "alpha": 1
+ },
+ {
+  "code": 4,
+  "name": "Red",
+  "hex": "#b40000",
+  "alpha": 1
+ },
+ {
+  "code": 320,
+  "name": "Dark Red",
+  "hex": "#720012",
+  "alpha": 1
+ },
+ {
+  "code": 25,
+  "name": "Orange",
+  "hex": "#d67923",
+  "alpha": 1
+ },
+ {
+  "code": 191,
+  "name": "Bright Light Orange",
+  "hex": "#fcac00",
+  "alpha": 1
+ },
+ {
+  "code": 14,
+  "name": "Yellow",
+  "hex": "#fac80a",
+  "alpha": 1
+ },
+ {
+  "code": 226,
+  "name": "Bright Light Yellow",
+  "hex": "#ffec6c",
+  "alpha": 1
+ },
+ {
+  "code": 19,
+  "name": "Tan",
+  "hex": "#d7ba8c",
+  "alpha": 1
+ },
+ {
+  "code": 28,
+  "name": "Dark Tan",
+  "hex": "#897d62",
+  "alpha": 1
+ },
+ {
+  "code": 70,
+  "name": "Reddish Brown",
+  "hex": "#5f3109",
+  "alpha": 1
+ },
+ {
+  "code": 2,
+  "name": "Green",
+  "hex": "#00852b",
+  "alpha": 1
+ },
+ {
+  "code": 10,
+  "name": "Bright Green",
+  "hex": "#58ab41",
+  "alpha": 1
+ },
+ {
+  "code": 27,
+  "name": "Lime",
+  "hex": "#a5ca18",
+  "alpha": 1
+ },
+ {
+  "code": 288,
+  "name": "Dark Green",
+  "hex": "#00451a",
+  "alpha": 1
+ },
+ {
+  "code": 1,
+  "name": "Blue",
+  "hex": "#1e5aa8",
+  "alpha": 1
+ },
+ {
+  "code": 73,
+  "name": "Medium Blue",
+  "hex": "#7396c8",
+  "alpha": 1
+ },
+ {
+  "code": 322,
+  "name": "Medium Azure",
+  "hex": "#68c3e2",
+  "alpha": 1
+ },
+ {
+  "code": 272,
+  "name": "Dark Blue",
+  "hex": "#19325a",
+  "alpha": 1
+ },
+ {
+  "code": 85,
+  "name": "Medium Lilac",
+  "hex": "#441a91",
+  "alpha": 1
+ },
+ {
+  "code": 29,
+  "name": "Bright Pink",
+  "hex": "#ff9ecd",
+  "alpha": 1
+ },
+ {
+  "code": 26,
+  "name": "Magenta",
+  "hex": "#901f76",
+  "alpha": 1
+ },
+ {
+  "code": 47,
+  "name": "Trans Clear",
+  "hex": "#fcfcfc",
+  "alpha": 0.5019607843137255
+ },
+ {
+  "code": 36,
+  "name": "Trans Red",
+  "hex": "#c91a09",
+  "alpha": 0.5019607843137255
+ },
+ {
+  "code": 46,
+  "name": "Trans Yellow",
+  "hex": "#f5cd2f",
+  "alpha": 0.5019607843137255
+ },
+ {
+  "code": 34,
+  "name": "Trans Green",
+  "hex": "#237841",
+  "alpha": 0.5019607843137255
+ },
+ {
+  "code": 43,
+  "name": "Trans Light Blue",
+  "hex": "#aee9ef",
+  "alpha": 0.5019607843137255
+ },
+ {
+  "code": 33,
+  "name": "Trans Dark Blue",
+  "hex": "#0020a0",
+  "alpha": 0.5019607843137255
+ },
+ {
+  "code": 7,
+  "name": "Light Grey",
+  "hex": "#8a928d",
+  "alpha": 1
+ },
+ {
+  "code": 256,
+  "name": "Rubber Black",
+  "hex": "#1b2a34",
+  "alpha": 1
+ }
+]

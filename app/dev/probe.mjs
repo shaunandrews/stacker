@@ -1,0 +1,34 @@
+// Dev probe: prints Stacker state as JSON (used by emulator tests).
+export default async function run({ frame, page }) {
+  const target = frame ?? page;
+  return await target.evaluate(() => {
+    const s = window.stacker;
+    if (!s || !s.ready) return { error: 'not ready' };
+    const round = (v) => Math.round(v * 1000) / 1000;
+    const wp = (o) => o.getWorldPosition(o.position.clone()).toArray().map(round);
+    const r = s.root.object3D;
+    const recOut = (rec) => {
+      const p = r.position.clone(); const q = r.quaternion.clone();
+      s.placedWorldPose(rec, p, q);
+      return { part: s.lib.parts[rec.part].id, color: s.lib.colors[rec.color].code, i: rec.i, j: rec.j, level: rec.level, turns: rec.turns, free: !!rec.m, w: p.toArray().map(round) };
+    };
+    return {
+      placed: s.placedRecs.length, loose: s.loose.length, snaps: s.snaps.length, bounds: s.bounds, scale: s.scale,
+      tool: s.tool, tab: s.tab, color: s.color, selection: s.selection.size,
+      kit: s.kit ? { step: s.kit.step, steps: s.kit.steps.length, remaining: s.kit.remaining.length, shelf: s.shelfItems.length } : null,
+      root: { p: r.position.toArray().map(round), q: r.quaternion.toArray().map(round) },
+      hands: s.hands.map((h) => ({ mode: h.mode, target: h.target?.kind ?? null, far: h.targetFar, pieces: h.pieces?.length ?? 0, frame: h.frame, slider: !!h.slider })),
+      previews: s.cells().map((c) => wp(c.preview)),
+      cellsPerPage: s.cellsPerPage,
+      library: { w: s.library.w, h: s.library.h, resize: wp(s.library.resize), bar: wp(s.library.bar) },
+      visual: s.visual, tone: s.tone, physical: s.physical, instructions: s.instructions, manual: !!s.manual, page: s.kit?.page ?? null,
+      ui: Object.fromEntries(s.panels.flatMap((p) => p.items).filter((u) => u.kind !== 'swatch').map((u) => [u.id, wp(u.mesh)])),
+      swatches: s.library.items.filter((u) => u.kind === 'swatch').map((u) => wp(u.mesh)),
+      guide: s.hands.map((h) => h.guide.visible), lit: s.hands.map((h) => !!h.lit),
+      placedList: s.placedRecs.slice(0, 80).map(recOut),
+      shelf: s.shelfItems.map((it) => ({ part: s.lib.parts[it.block.part].id, w: it.block.mesh.position.toArray().map(round) })),
+      shelfBar: s.shelfBar ? wp(s.shelfBar) : null,
+      kitTargets: s.kit ? s.kit.remaining.map(({ rec }) => recOut(rec)) : [],
+    };
+  });
+}

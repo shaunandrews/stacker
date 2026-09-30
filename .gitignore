@@ -1,0 +1,6 @@
+# Downloaded source data (LDraw library, Rebrickable CSVs, models) — see docs/07-development.md
+data-src/
+
+# Build/deploy leftovers
+site.zip
+.DS_Store

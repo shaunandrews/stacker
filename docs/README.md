@@ -1,0 +1,31 @@
+# Stacker docs
+
+Stacker is a mixed-reality brick-building app for Meta Quest 3, built for the browser with WebXR. A platform floats in your room, a library panel holds real brick parts, and you build with your hands or controllers. Kits guide you through official models step by step.
+
+**Live build:** the private Spacefast space `spc_faf94500d20b4e979a35db4ede374b64` (open the preview link on the Quest). **Code:** [`app/`](../app). **Data tools:** [`tools/`](../tools).
+
+![Library and settings panels](images/v7-panels.png)
+
+## Read in this order
+
+| Doc | What's in it |
+|---|---|
+| [01 · Vision & status](01-vision.md) | What Stacker is for, what's built, what's next |
+| [02 · Architecture](02-architecture.md) | Stack, repo layout, how the runtime is organized |
+| [03 · Interaction](03-interaction.md) | Input, grabbing, snapping, tools, panels — plus the controls cheat sheet |
+| [04 · Parts pipeline](04-parts-pipeline.md) | LDraw + Rebrickable → `parts.bin`, colors, minifigs |
+| [05 · Kits](05-kits.md) | Kit format, converting LDraw models, ghosts, shelf, manual |
+| [06 · Rendering & performance](06-rendering-and-performance.md) | Instancing, materials, lighting, the look sliders, perf budget |
+| [07 · Development](07-development.md) | Running, emulator testing, deploying, licensing |
+| [08 · Decisions](08-decisions.md) | Why things are the way they are |
+
+## Status (2026-09-30)
+
+Working prototype, tested in the IWSDK Quest 3 emulator and by hand on device:
+
+- 177 LDraw parts in 10 library tabs, 32 official colors, 6 minifig presets
+- Grid snapping with stacking, hanging under overhangs, and 90° rotation
+- Build / Select / Paint tools, duplicate, delete, group moves
+- Movable, tiltable, resizable platform; movable, resizable library; settings panel with 19 look sliders
+- Three kits (House 7796, Go-Kart 6400, Robot 7910) with ghost guidance, a parts shelf, and a paged manual
+- Autosave plus 6 save slots
