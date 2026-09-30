@@ -434,12 +434,12 @@ export const STYLES: Style[] = [
   {
     name: 'Daylight',
     env: 'interior',
-    envStrength: 0.55,
-    envTurn: 0,
+    envStrength: 0.65,
+    envTurn: 90, // the loft's windows catch stud rims and roofs from the front
     backdrop: ['#bcd4ee', '#d8d2c8'],
     backdropAmount: 0,
     tone: 0,
-    exposure: 1.05,
+    exposure: 1.1,
     key: { color: '#fff1e0', strength: 3.2, angle: -55, height: 45 },
     fill: { sky: '#ffffff', ground: '#6b6358', strength: 0.2 },
     shadow: 0.85,
