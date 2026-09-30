@@ -116,6 +116,7 @@ export class Library {
       g.setAttribute('position', new BufferAttribute(P, 3));
       g.setAttribute('normal', new BufferAttribute(N, 3));
       g.setAttribute('ao', new BufferAttribute(A, 1));
+      g.setAttribute('studUv', new BufferAttribute(studUvs(P, N, p.conn ?? [], s * 10), 2));
       g.setIndex(new BufferAttribute(idx.slice(), 1));
       if (p.fixed) {
         // Stored alpha is 255 where a color is fixed; the shader wants the opposite
@@ -176,12 +177,52 @@ function align4(n: number): number {
  * same rounded rim as the bevelled parts: a flat top, a rim whose normals turn from up
  * to outward, and a straight side. 80 triangles.
  */
+/**
+ * UVs across each stud's top (0–1 over its 12 LDU disc) for the stud logo, from the part's
+ * stud connectors; (10, 10) everywhere else. `ldu` is meters per LDU.
+ */
+function studUvs(P: Float32Array, N: Float32Array, conn: number[][], ldu: number): Float32Array {
+  const out = new Float32Array((P.length / 3) * 2).fill(10);
+  const tops = conn.filter((c) => c[0] === 0).map(([, x, y, z, ax, ay, az]) => ({ x: (x + ax * 4) * ldu, y: (y + ay * 4) * ldu, z: (z + az * 4) * ldu, ax, ay, az }));
+  if (!tops.length) return out;
+  const cell = 20 * ldu;
+  const key = (x: number, y: number, z: number) => `${Math.floor(x / cell)},${Math.floor(y / cell)},${Math.floor(z / cell)}`;
+  const grid = new Map<string, typeof tops>();
+  for (const t of tops) {
+    const k = key(t.x, t.y, t.z);
+    grid.set(k, [...(grid.get(k) ?? []), t]);
+  }
+  for (let v = 0; v < P.length / 3; v++) {
+    const px = P[v * 3], py = P[v * 3 + 1], pz = P[v * 3 + 2];
+    const cx = Math.floor(px / cell), cy = Math.floor(py / cell), cz = Math.floor(pz / cell);
+    search: for (let i = -1; i <= 1; i++)
+      for (let j = -1; j <= 1; j++)
+        for (let k = -1; k <= 1; k++) {
+          for (const t of grid.get(`${cx + i},${cy + j},${cz + k}`) ?? []) {
+            if (N[v * 3] * t.ax + N[v * 3 + 1] * t.ay + N[v * 3 + 2] * t.az < 0.9) continue;
+            const dx = px - t.x, dy = py - t.y, dz = pz - t.z;
+            const along = dx * t.ax + dy * t.ay + dz * t.az;
+            if (Math.abs(along) > 0.5 * ldu) continue;
+            const rx = dx - along * t.ax, ry = dy - along * t.ay, rz = dz - along * t.az;
+            if (rx * rx + ry * ry + rz * rz > (6.2 * ldu) ** 2) continue;
+            // In the stud's plane: x across, and z (or y, for a stud facing along z) the other way.
+            const upright = Math.abs(t.ay) > 0.7;
+            out[v * 2] = 0.5 + rx / (12 * ldu);
+            out[v * 2 + 1] = 0.5 - (upright ? rz : ry) / (12 * ldu); // eyes toward -z: upright to someone in front
+            break search;
+          }
+        }
+  }
+  return out;
+}
+
 export function studGeometry(): BufferGeometry {
   const L = dims.ldu;
   const SEG = 16;
   const pos: number[] = [0, 4 * L, 0];
   const nor: number[] = [0, 1, 0];
   const ao: number[] = [0]; // baked occlusion, as on parts: dark where the stud meets the plate
+  const uv: number[] = [0.5, 0.5]; // stud logo across the top; off the top it's out of range
   const ringAo = [0, 0.05, 0.45];
   // Rings: top edge of the rim (normal up), bottom of the rim and foot of the side (outward).
   const rings: Array<[number, number, boolean]> = [
@@ -192,6 +233,7 @@ export function studGeometry(): BufferGeometry {
   rings.forEach(([r, y, up], n) => {
     for (let k = 0; k < SEG; k++) {
       ao.push(ringAo[n]);
+      uv.push(...(up ? [0.5 + (r * Math.cos((k / SEG) * Math.PI * 2)) / 12, 0.5 - (r * Math.sin((k / SEG) * Math.PI * 2)) / 12] : [10, 10]));
       const a = (k / SEG) * Math.PI * 2;
       const c = Math.cos(a);
       const s = Math.sin(a);
@@ -211,6 +253,7 @@ export function studGeometry(): BufferGeometry {
   g.setAttribute('position', new BufferAttribute(new Float32Array(pos), 3));
   g.setAttribute('normal', new BufferAttribute(new Float32Array(nor), 3));
   g.setAttribute('ao', new BufferAttribute(new Float32Array(ao), 1));
+  g.setAttribute('studUv', new BufferAttribute(new Float32Array(uv), 2));
   g.setIndex(idx);
   return g;
 }

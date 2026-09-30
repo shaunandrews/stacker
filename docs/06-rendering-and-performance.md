@@ -43,6 +43,10 @@ Three finishes (`FINISHES` in `look.ts`), each one material per palette color fo
 - Specular anti-aliasing is built into three (derivative-based `geometryRoughness`)
 - Panels use unlit materials so the UI looks the same under any lighting
 
+### Stud logo
+
+Every stud top carries a tiny embossed winking smiley (generic on purpose — the repo is public). It's a 128² height map (`makeLogo` in `look.ts`), bumped in the plastic shader like the micro-surface, never geometry (LDraw's `stud-logo` primitives cost triangles). UVs across each stud top (0–1 over the 12 LDU disc; out of range elsewhere) are computed at load from the part's stud connectors (`studUvs` in `blocks.ts`), and set directly on the plate's stud geometry. Mipmaps plus a fade by `fwidth(uv)` stop it shimmering at a distance.
+
 ## Geometry
 
 Parts are bevelled in the pipeline (0.2 mm chamfer on hard convex edges, normals blended across the strip so it shades round) with 0.1 mm seams between neighbours — see [04](04-parts-pipeline.md). Baseplate studs use a matching 80-triangle stud with a rounded rim (`studGeometry`).

@@ -1,6 +1,7 @@
 import {
   BackSide,
   BufferAttribute,
+  CanvasTexture,
   Color,
   Data3DTexture,
   Matrix4,
@@ -145,11 +146,42 @@ float contactOcclusion() {
 }
 #endif`;
 
+// Stud logo: a tiny embossed winking smiley on every stud top (not anyone's trademark).
+// A height map, turned into a bump in the shader; mipmaps and a pixel-size fade keep it
+// from shimmering at a distance.
+function makeLogo(): CanvasTexture {
+  const c = document.createElement('canvas');
+  c.width = c.height = 128;
+  const g = c.getContext('2d')!;
+  g.fillStyle = '#000';
+  g.fillRect(0, 0, 128, 128);
+  g.filter = 'blur(1.2px)';
+  g.strokeStyle = g.fillStyle = '#fff';
+  g.lineCap = 'round';
+  g.lineWidth = 7;
+  g.beginPath(); // open eye
+  g.arc(47, 50, 6.5, 0, Math.PI * 2);
+  g.fill();
+  g.beginPath(); // wink
+  g.moveTo(72, 51);
+  g.quadraticCurveTo(81, 44, 90, 51);
+  g.stroke();
+  g.beginPath(); // grin
+  g.arc(64, 64, 26, 0.2 * Math.PI, 0.8 * Math.PI);
+  g.stroke();
+  const t = new CanvasTexture(c);
+  t.anisotropy = 4;
+  return t;
+}
+export const LOGO = { value: null as CanvasTexture | null };
+
 // Plastic micro-surface: value noise in the part's own millimetres (vLocal), offset per
 // instance, for a faint orange-peel in the normal and roughness. Fades out once a feature
 // gets smaller than a pixel so studs don't shimmer.
 const MICRO_GLSL = `
 varying float vSeed;
+varying vec2 vStudUv;
+uniform sampler2D uLogo;
 float stackerHash(vec3 p) {
   p = fract(p * 0.3183099 + 0.1);
   p *= 17.0;
@@ -177,6 +209,7 @@ export function patchBlockShader<T extends Material>(mat: T, finish = 'plastic',
     shader.uniforms.uPlateInv = CONTACT.plateInv;
     shader.uniforms.uGridMin = CONTACT.min;
     shader.uniforms.uGridSize = CONTACT.size;
+    if (micro) shader.uniforms.uLogo = LOGO.value ? LOGO : (LOGO.value = makeLogo(), LOGO);
     shader.vertexShader = shader.vertexShader
       .replace(
         '#include <common>',
@@ -187,6 +220,8 @@ varying vec4 vFixedColor;
 varying vec3 vLocal;
 varying float vAo;
 varying float vSeed;
+attribute vec2 studUv;
+varying vec2 vStudUv;
 #ifdef STACKER_CONTACT
 uniform mat4 uPlateInv;
 varying vec3 vPlatePos;
@@ -199,6 +234,7 @@ varying vec3 vPlateNormal;
 vFixedColor = fixedColor;
 vLocal = position * 1000.0;
 vAo = ao;
+vStudUv = studUv;
 #ifdef USE_INSTANCING
 vSeed = fract(sin(float(gl_InstanceID) * 12.9898 + 78.233) * 43758.5453);
 #else
@@ -250,13 +286,18 @@ roughnessFactor = clamp(roughnessFactor + (fract(vSeed * 3.71) - 0.5) * 0.06 + (
           '#include <normal_fragment_maps>',
           `#include <normal_fragment_maps>
 {
-  // Screen-space bump from the noise (as three's bump map does), ~20 µm tall.
-  vec2 dh = vec2(dFdx(micro), dFdy(micro)) * 2e-5 * microFade;
+  // Screen-space bump from the noise (as three's bump map does), ~10 µm tall.
+  vec2 dh = vec2(dFdx(micro), dFdy(micro)) * 1.1e-5 * microFade;
   vec3 sx = dFdx(-vViewPosition);
   vec3 sy = dFdy(-vViewPosition);
   vec3 r1 = cross(sy, normal);
   vec3 r2 = cross(normal, sx);
   float det = dot(sx, r1) * faceDirection;
+  // Stud logo (studUv is 0–1 across the stud top; missing or off the top it's out of range).
+  vec2 inStud = step(vec2(0.0), vStudUv) * step(vStudUv, vec2(1.0));
+  float logoFade = clamp(1.0 - length(fwidth(vStudUv)) * 10.0, 0.0, 1.0);
+  float logo = texture2D(uLogo, clamp(vStudUv, 0.0, 1.0)).r * inStud.x * inStud.y * step(0.001, vStudUv.x) * logoFade;
+  dh += vec2(dFdx(logo), dFdy(logo)) * 8e-5;
   normal = normalize(abs(det) * normal - sign(det) * (dh.x * r1 + dh.y * r2));
 }`,
         );
