@@ -15,7 +15,7 @@ Stacker is a mixed-reality brick-building app for Meta Quest 3, built for the br
 | [03 · Interaction](03-interaction.md) | Input, grabbing, snapping, tools, panels — plus the controls cheat sheet |
 | [04 · Parts pipeline](04-parts-pipeline.md) | LDraw + Rebrickable → `parts.bin`, colors, minifigs |
 | [05 · Kits](05-kits.md) | Kit format, converting LDraw models, ghosts, shelf, manual |
-| [06 · Rendering & performance](06-rendering-and-performance.md) | Instancing, materials, lighting, the look sliders, perf budget |
+| [06 · Rendering & performance](06-rendering-and-performance.md) | Instancing, materials, lighting, look presets, perf budget |
 | [07 · Development](07-development.md) | Running, emulator testing, deploying, licensing |
 | [08 · Decisions](08-decisions.md) | Why things are the way they are |
 
@@ -26,7 +26,9 @@ Working prototype, tested in the IWSDK Quest 3 emulator and by hand on device:
 - 199 LDraw parts in 11 library tabs (incl. Special: hinges, turntables, SNOT), 32 official colors, 6 minifig presets
 - Connector snapping: studs and sockets in any orientation, free rotation, joint pairs (hinges, turntables, window glass)
 - Build / Select / Paint tools, duplicate, delete, group moves
-- Movable, tiltable, resizable platform; movable, resizable library with 12 finishes (shiny, matte, glass, diamond, chrome…)
-- Settings panel: 12 art-direction styles, 6 lighting environments, virtual backdrop, 14 fine-tune sliders
+- Movable, tiltable, resizable platform; movable, resizable library with 3 materials (plastic, wood, clear)
+- Settings panel: 6 look presets up front; environments, tone, Hz, Stress and fine-tune sliders under Advanced
+- Splash screen with loading progress; **desktop view** (mouse + keyboard) for exploring and testing without a headset
+- Undo/redo (50 steps); confirm taps on Clear, Stress and starting a kit over a build
 - Three kits (House 7796, Go-Kart 6400, Robot 7910) with ghost guidance, a parts shelf, and a paged manual
 - Autosave plus 6 save slots

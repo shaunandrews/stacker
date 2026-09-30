@@ -10,16 +10,35 @@ Stacker does its own input handling on top of IWSDK's raw input: controller pose
 | Grab (far) | Point the laser, then grip/trigger | Point, then pinch |
 | Press a button / tab / swatch | Point + trigger (or grip) | Poke with index finger, or point + pinch |
 | Duplicate what you're pointing at | Hold A / X — carry — let go to place | Hold thumb + middle-finger pinch |
-| Delete | B / Y on a block (or while holding) | Drop it on the library panel |
+| Delete | B / Y on a block (or while holding) | Drop it on the library panel (it turns red) |
 | Turn held block 90° | Thumbstick left / right | Rotate your wrist |
-| Push held block out / pull in | Thumbstick up / down | Move your hand |
+| Tip held block 90° | Thumbstick up / down | Rotate your wrist |
+| Undo / redo | ↶ Undo / ↷ on the library's tool row | Same |
 | Move platform / tilt it | Grab a white edge bar | Pinch an edge bar |
 | Resize platform | Grab a yellow corner | Pinch a yellow corner |
 | Move a panel or the kit shelf | Grab its white bar underneath | Pinch its bar |
 | Resize the library | Grab its yellow corner (bottom-right) | Pinch it |
 | Drag a slider | Point + hold trigger, sweep | Touch and slide, or pinch-drag |
 
-Keyboard shortcuts in the desktop/emulator view: **R** recenter, **C** clear, **S** showcase (every part laid out).
+Destructive buttons ask for a second tap within 3 s: **Clear**, **Stress** (when there's a build), and starting a **kit** over a build.
+
+## Desktop (mouse + keyboard)
+
+The splash screen offers **Explore on this computer**: an orbit camera around the platform, panels standing behind it, and the cursor as the right hand (`desktop.ts`, read in `readMouse`). Outside XR there's no passthrough, so the preset's backdrop fills in.
+
+| Action | Mouse / keys |
+|---|---|
+| Press buttons, pick a part, grab | Click / drag (left) |
+| Duplicate | Alt + drag |
+| Select | Shift + click (any tool) |
+| Turn / tip the held block | Q E or ← → / ↑ ↓ |
+| Delete | Delete or Backspace (hovered block, selection, or what's held) |
+| Tools | 1 Build · 2 Select · 3 Paint |
+| Undo / redo | ⌘/Ctrl + Z, add Shift to redo |
+| Orbit / pan / zoom | Right-drag / Shift + right-drag or middle-drag / wheel |
+| Frame the platform | F |
+
+A carried block sits on whatever is under the cursor — a placed block or the plate — and the normal snap takes it from there. Over the library, it follows the cursor onto the panel (letting go removes it). Presses aim where the button went down, so a quick drag still grabs what was under the cursor.
 
 ## Input model
 
@@ -28,7 +47,15 @@ Each hand has a `HandState`:
 - `mode`: `controller`, `hand`, or `none` (switching modes drops what's held)
 - `rayOrigin`/`rayDir` from IWSDK's target-ray space
 - `point`: the near-grab point — 3.5 cm out along the controller ray, or the midpoint between thumb and index tips
-- `down`/`up`: button edges this frame — `squeeze`, `trigger`, `a`, `b` (controllers), `pinch`, `mid` (hands). Pinches use hysteresis (on < 18 mm, off > 35 mm)
+- `down`/`up`: button edges this frame — `squeeze`, `trigger`, `a`, `b` (controllers and mouse), `pinch`, `mid` (hands). Pinches use hysteresis (on < 18 mm, off > 30 mm). The middle-finger pinch (duplicate) only counts with the index finger clearly open (> 40 mm) and the middle tip within 15 mm
+
+### Hand tracking details
+
+- **Steady aim.** The hand's pointing ray is smoothed (small jitter damped, deliberate moves followed at once). While the fingers close fast toward a pinch, the ray and the target are held still for 150 ms, so the pinch itself doesn't knock the aim off what you meant.
+- **Pinch ring.** A small ring between thumb and index shrinks as they close and fills blue on the pinch — white when something is targeted.
+- **Letting go.** Once the pinch opens past 22 mm, the held block stops following the fingers, and release commits the landing that was on show (per-hand snap cache) rather than recomputing it.
+- **Tracking loss.** A hand dropping out of tracking mid-hold keeps its pieces still for 0.3 s; if it's back and still pinching, the hold continues. Otherwise the pieces are parked where they are — never snapped somewhere you didn't choose.
+- **Poke.** A press needs the fingertip to arrive from in front of the panel (armed above 6 mm) and reach the surface (4 mm; buttons sit at 1 mm). Sliding in from the side or from behind doesn't fire. Presses by hand or mouse play a soft tick (no haptics there).
 - `holdButton`: whichever button started a hold; releasing *that* button ends it (so hold-A-to-duplicate releases on A)
 
 ## Targeting
@@ -46,11 +73,14 @@ The target gets a white shell outline (tinted with the paint color in Paint mode
 
 A carry is a list of **pieces**; `pieces[0]` is the anchor. Every other piece stores its offset from the anchor (`offPos`/`offQuat` for display; `d2x`, `d2z`, `dl` in grid terms for snapping). A single block is just a one-piece carry, so groups and minifigs use the same code.
 
-- **Controllers** hold the anchor upright and aligned with the platform, `holdDist` (8 cm default) out along the ray, so the controller never hides it. Yaw is `holdYaw` (thumbstick steps in 90°, smoothed).
+- **Controllers** keep the block's rotation relative to the controller from when it was grabbed; far grabs hold it 8 cm out along the ray. The thumbstick turns it in quarter turns: left/right about the platform's up, up/down tips it.
+- **Mouse** holds keep a world rotation; Q/E and the arrows turn it the same way.
 - **Hands** keep the grip where it was taken (far grabs fly to the pinch point) and follow the wrist's full rotation, smoothed harder than controllers to hide tracking jitter.
 - Grabbing a placed block removes it from its batch and spawns a loose mesh at the same pose.
 
 ## Snapping (`computeSnap`)
+
+Snapping is connector-based: each part's studs and sockets (from `parts.json` `conn`) are indexed in a spatial hash, and candidate landings align a carried connector with a facing one nearby, rejected when oriented boxes collide. It's recomputed only when the held pieces move more than 0.5 mm / 0.6° or the build changes. The steps below describe the kit magnet and the placement rules on top.
 
 Given the carried pieces, find where they'd land. The result is one `Placement` per piece; the preview ghost (light blue) is drawn there each frame, and releasing animates the pieces into those spots over 70 ms.
 
@@ -68,7 +98,7 @@ Heights are counted in **half plates** (4 LDU): plate = 2, brick = 6, minifig le
 
 ## Releasing
 
-- Over the **library panel** → the pieces poof (deleted).
+- Over the **library panel** → the pieces poof (deleted). The library tints red while a held block is over it.
 - If `computeSnap` succeeds → cells are reserved immediately (so the other hand can't take them mid-animation), the pieces animate in, then move into their instanced batch, and the kit checks for a match.
 - Otherwise they stay **parked** in the air where you let go.
 
@@ -82,6 +112,8 @@ Heights are counted in **half plates** (4 LDU): plate = 2, brick = 6, minifig le
 
 In any tool, grabbing a selected block carries the whole selection, keeping its shape and re-selecting it once placed. Tapping a swatch while blocks are selected recolors them.
 
+**Undo** keeps 50 steps. Whenever an edit settles — nothing held, painting or animating — the state from before it (placed blocks + plate bounds, as JSON) goes on the stack, so a whole drag, sweep-paint or group move is one step. It's off during kits (kit progress isn't part of the snapshot); leaving a kit is one undoable step.
+
 ## Platform, panels, shelf
 
 - **Edge bars** attach the platform rigidly to your hand (6DoF), so you can move and tilt it. If released within 7° of level, it eases back to level.
@@ -93,7 +125,7 @@ In any tool, grabbing a selected block carries the whole selection, keeping its 
 
 ## Library panel
 
-Top to bottom: tool row, tabs (Bricks, Plates, Tiles, Slopes, Curves, Round, Wedges, Windows, Minifigs, More, Kits, Saves), the part grid, a context row, the color swatches, credits.
+Top to bottom: tool row (Build, Select, Paint, Deselect, ↶ Undo, ↷), tabs (Bricks, Plates, Tiles, Slopes, Curves, Round, Wedges, Windows, Minifigs, More, Kits, Saves), the part grid, a context row, the color swatches, credits.
 
 - Grid cells show a spinning preview. **Grab** a cell to pull out a new block; **tap** it to drop one in front of the platform.
 - The context row changes with the tab: paging (◀ Tab n/N ▶), kit controls (Exit / ↺ Restart step / Skip ▶), or saves (Save / Slot n / Load).

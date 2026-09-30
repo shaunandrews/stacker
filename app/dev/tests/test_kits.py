@@ -17,6 +17,7 @@ def carry_to(g, dy=0.004):
         c = [c[i]+d[i] for i in range(3)]
         cli('xr','set-transform', inp={'device':R,'position':{'x':c[0],'y':c[1],'z':c[2]}}); time.sleep(0.3)
 def kit_start(k):
+    js('s.exitKit(); s.clearPlaced(); return 1')  # with a build on the plate, starting a kit asks for a second tap
     s = probe(); ray_press(s['ui'][tab_id('Kits')]); s = probe(); ray_press(s['ui'][f'cell:{k}']); time.sleep(1)
     return probe()
 cli('xr','set-transform', inp={'device':'headset','orientation':{'pitch':-40,'yaw':0,'roll':0}})

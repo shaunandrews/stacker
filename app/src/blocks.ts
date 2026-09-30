@@ -2,8 +2,8 @@ import {
   BufferAttribute,
   BufferGeometry,
   Color,
-  CylinderGeometry,
 } from '@iwsdk/core';
+import { progress } from './splash.js';
 
 // ---- Units ----
 // Parts come from the LDraw library (1 stud = 20 LDU, plate = 8 LDU, brick = 24 LDU).
@@ -69,7 +69,7 @@ export class Library {
     const lib = new Library();
     const [meta, bin, colors, minifigs] = await Promise.all([
       fetch(`${base}parts/parts.json`).then((r) => r.json()),
-      fetch(`${base}parts/parts.bin`).then((r) => r.arrayBuffer()),
+      fetchWithProgress(`${base}parts/parts.bin`, (f) => progress(f * 0.9)),
       fetch(`${base}parts/colors.json`).then((r) => r.json()),
       fetch(`${base}parts/minifigs.json`).then((r) => r.json()),
     ]);
@@ -130,11 +130,72 @@ export class Library {
   }
 }
 
+/** Fetch a binary, reporting 0–1 as it streams in (when the size is known). */
+async function fetchWithProgress(url: string, onProgress: (fraction: number) => void): Promise<ArrayBuffer> {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`${url}: ${res.status}`);
+  // Content-Length is the transfer size; compressed responses stream more bytes, hence the cap.
+  const total = Number(res.headers.get('content-length')) || 0;
+  if (!res.body || !total) return res.arrayBuffer();
+  const reader = res.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let got = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(value);
+    got += value.length;
+    onProgress(Math.min(1, got / total));
+  }
+  const out = new Uint8Array(got);
+  let at = 0;
+  for (const c of chunks) {
+    out.set(c, at);
+    at += c.length;
+  }
+  return out.buffer;
+}
+
 function align4(n: number): number {
   return n % 4 ? n + 4 - (n % 4) : n;
 }
 
-/** Baseplate stud, base at y = 0 (LDraw proportions: Ø 12 LDU, 4 LDU tall). */
+/**
+ * Baseplate stud, base at y = 0 (LDraw proportions: Ø 12 LDU, 4 LDU tall), with the
+ * same rounded rim as the bevelled parts: a flat top, a rim whose normals turn from up
+ * to outward, and a straight side. 80 triangles.
+ */
 export function studGeometry(): BufferGeometry {
-  return new CylinderGeometry(6 * dims.ldu, 6 * dims.ldu, 4 * dims.ldu, 16).translate(0, 2 * dims.ldu, 0);
+  const L = dims.ldu;
+  const SEG = 16;
+  const pos: number[] = [0, 4 * L, 0];
+  const nor: number[] = [0, 1, 0];
+  // Rings: top edge of the rim (normal up), bottom of the rim and foot of the side (outward).
+  const rings: Array<[number, number, boolean]> = [
+    [5.5, 4, true],
+    [6, 3.5, false],
+    [6, 0, false],
+  ];
+  for (const [r, y, up] of rings) {
+    for (let k = 0; k < SEG; k++) {
+      const a = (k / SEG) * Math.PI * 2;
+      const c = Math.cos(a);
+      const s = Math.sin(a);
+      pos.push(r * c * L, y * L, r * s * L);
+      nor.push(up ? 0 : c, up ? 1 : 0, up ? 0 : s);
+    }
+  }
+  const idx: number[] = [];
+  const ring = (n: number, k: number) => 1 + n * SEG + (k % SEG);
+  for (let k = 0; k < SEG; k++) {
+    idx.push(0, ring(0, k + 1), ring(0, k));
+    for (let n = 0; n < 2; n++) {
+      idx.push(ring(n, k), ring(n, k + 1), ring(n + 1, k + 1), ring(n, k), ring(n + 1, k + 1), ring(n + 1, k));
+    }
+  }
+  const g = new BufferGeometry();
+  g.setAttribute('position', new BufferAttribute(new Float32Array(pos), 3));
+  g.setAttribute('normal', new BufferAttribute(new Float32Array(nor), 3));
+  g.setIndex(idx);
+  return g;
 }

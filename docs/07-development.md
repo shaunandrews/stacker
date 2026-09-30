@@ -8,7 +8,7 @@ npm install
 npx iwsdk dev up            # dev server + a managed browser with the Quest 3 emulator (IWER)
 ```
 
-The port is set in `app/vite.config.ts` (3129, reserved with Port Keeper). `npx iwsdk dev status` lists the LAN URLs; open one on the Quest (same Wi-Fi) and accept the local certificate warning.
+The port is set in `app/vite.config.ts` (3129, reserved with Port Keeper). A second checkout (e.g. a git worktree) can run alongside with `STACKER_PORT=<port> npx iwsdk dev up …` on a port from `portman request`. `npx iwsdk dev status` lists the LAN URLs; open one on the Quest (same Wi-Fi) and accept the local certificate warning.
 
 Before testing any change:
 
@@ -41,14 +41,18 @@ Then from `app/`:
 | `dev/js.mjs` | Evaluates `artifacts/js.txt` with `s = window.stacker` |
 | `dev/eval.mjs` | Calls `window.stacker[method](...args)` from `artifacts/eval.json` |
 | `dev/stress.mjs` | Runs Stress and reports draws/triangles |
+| `dev/mouse.mjs` | Replays mouse/keyboard steps from `artifacts/mouse.json` in the desktop view (`move`, `down`, `up`, `key`, `keydown`/`keyup`, `wheel`, `wait`). Keys are dispatched as DOM events: the headless window never has keyboard focus |
 
 Python regression tests (`dev/tests/`, using the `iw.py` helpers — `probe()`, `move()`, `look()`, `btn()`, `tip_at()`, `js()`):
 
 ```bash
 python3 dev/tests/test_build_tools.py       # grab, duplicate, select, group move, recolor, paint, delete, save/load
 python3 dev/tests/test_kits.py              # shelf, ghost magnet, ghost restore, restart, shelf move, free parts, completion
-python3 dev/tests/test_panels_guidance.py   # library resize, sliders, toggles, guide line, rough drop, manual paging
+python3 dev/tests/test_panels_guidance.py   # library resize, presets, Advanced, sliders, guide line, rough drop, manual paging
+python3 dev/tests/test_desktop.py           # splash, desktop drag/place, Alt-duplicate, undo/redo, select, delete, library drop, orbit
 ```
+
+The page opens on a splash screen (markup in `index.html`, logic in `splash.ts`); tests that enter XR through the CLI skip it automatically, and `test_desktop.py` clicks **Explore on this computer**.
 
 Tips:
 

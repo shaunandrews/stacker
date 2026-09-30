@@ -35,7 +35,7 @@ npx iwsdk dev up --headless --ai-mode agent --allow-browser-automation
 - `dev/tests/iw.py` helpers: `probe()`, `js(code)` (runs with `s = window.stacker`), `move()`, `look()`, `btn()`, `tip_at()`, `tab_id(name)`
 - Regression tests — run the relevant ones before committing behavior changes:
   - `python3 dev/tests/test_build_tools.py` (grab, duplicate, select, group move, recolor, paint, delete, save/load)
-  - `python3 dev/tests/test_kits.py`, `python3 dev/tests/test_panels_guidance.py`
+  - `python3 dev/tests/test_kits.py`, `python3 dev/tests/test_panels_guidance.py`, `python3 dev/tests/test_desktop.py` (mouse/keyboard view)
 - Quick kit check: `js('await s.startKit("7796-1","House"); ...skipStep()')` until done, then confirm the piece count (House 56, Go-Kart 29, Robot 25)
 - Screenshots: `npx iwsdk browser screenshot --output-file artifacts/x.png`; tile several with `dev/contact.mjs` (reads `artifacts/sheet.json`). `artifacts/` is git-ignored.
 - Browser logs accumulate across reloads — compare timestamps before chasing an error.

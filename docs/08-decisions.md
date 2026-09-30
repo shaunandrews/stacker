@@ -40,3 +40,21 @@ Building tools and look/render tuning serve different moments. The library is re
 
 ### Look sliders instead of fixed art direction
 Art direction is still open. Exposing every lighting and material parameter live lets it be tuned in the headset, where it actually matters. Winning values become the new defaults.
+
+### Presets up front, sliders under Advanced; three materials
+The sliders didn't mean much to the player. Six tuned presets are the main choice now; the sliders stay under Advanced for tuning. Twelve finishes became three that matter for building: plastic, wood, and clear plastic for windows.
+
+### Stay on WebXR + three.js for visuals (Sept 2026)
+Researched native (Unity, Spatial SDK) and other web stacks (WebGPU three, Babylon, PlayCanvas, Wonderland). The cheap look came from content and lighting, not the engine: no bevels or seams, and an environment light drowning the key light. WebGPU in WebXR is still flag-only on Quest Browser, and other engines hit the same GPU. Native would add SpaceWarp, dynamic resolution and camera-based room lighting — worth revisiting only for those.
+
+### Desktop view as a virtual right hand
+Exploring and testing on a laptop reuses the XR interaction code: the cursor becomes the right hand's ray (mode `mouse`), the left button its trigger. Only carrying differs — a mouse has no depth, so a held block sits on whatever is under the cursor. One interaction model, so desktop tests exercise the same paths as the headset.
+
+### Undo by snapshots, not commands
+Snapshotting placed blocks + bounds after each settled edit covers every way the build changes (grabs, paints, deletes, kits ending, Clear, Stress) without instrumenting each one. At 1.5k blocks a snapshot is ~180 KB and ~1 ms, taken only when an edit settles.
+
+### Splash screen before XR
+The page used to open straight into a black canvas. A splash (in `index.html`, so it shows before any JS loads) reports loading progress, then offers mixed reality or the desktop view, and returns when you leave XR.
+
+### Bevels baked in the pipeline, not a shader
+Edge highlights carry the LEGO look. Chamfering hard edges at build time costs triangles (~1.8×) but no per-pixel work, and works on any LDraw part. Screen-space tricks (SSAO, edge detection) don't fit multiview WebXR.

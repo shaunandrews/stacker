@@ -23,7 +23,7 @@ A building toy that lives in your room. Passthrough stays on, a platform floats 
 | Kits | House (56 pcs), Go-Kart (29 pcs, with driver), Robot (25 pcs, hinged parts) |
 | Guidance | Edge-only pulsing ghosts, a yellow guide line to where the held piece goes, 6 cm magnet, a movable parts shelf, restart/skip step, optional paged manual with a 3D miniature |
 | Minifigs | 6 presets that snap as one stacked figure |
-| Look | 19 live sliders + tone mapping + material model; persisted per device |
+| Look | 6 look presets; environment, tone and 13 sliders under Advanced; 3 materials (plastic, wood, clear); bevelled parts; persisted per device |
 | Saves | Autosave and 6 named slots in browser storage |
 | Performance | Instanced rendering (one draw per part type), no physics engine, foveation, 120 Hz requested |
 

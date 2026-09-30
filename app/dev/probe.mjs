@@ -10,7 +10,11 @@ export default async function run({ frame, page }) {
     const recOut = (rec) => {
       const p = r.position.clone(); const q = r.quaternion.clone();
       s.placedWorldPose(rec, p, q);
-      const e = rec.m.elements; return { part: s.lib.parts[rec.part].id, color: s.lib.colors[rec.color].code, local: [e[12], e[13], e[14]].map((v) => Math.round(v * 10000) / 10000), up: [e[4], e[5], e[6]].map((v) => Math.round(v * 100) / 100), w: p.toArray().map(round) };
+      const e = rec.m.elements;
+      // Quarter turns about up, and "free" = not upright or not on a quarter turn (placed by transform, not grid).
+      const yaw = Math.atan2(-e[2], e[0]); const turns = ((Math.round(yaw / (Math.PI / 2)) % 4) + 4) % 4;
+      const free = Math.abs(e[5]) < 0.99 || Math.abs(yaw - Math.round(yaw / (Math.PI / 2)) * (Math.PI / 2)) > 0.01;
+      return { part: s.lib.parts[rec.part].id, turns, free, color: s.lib.colors[rec.color].code, local: [e[12], e[13], e[14]].map((v) => Math.round(v * 10000) / 10000), up: [e[4], e[5], e[6]].map((v) => Math.round(v * 100) / 100), w: p.toArray().map(round) };
     };
     return {
       placed: s.placedRecs.length, loose: s.loose.length, snaps: s.snaps.length, bounds: s.bounds, scale: s.scale,

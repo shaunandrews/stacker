@@ -23,7 +23,6 @@ import {
   Matrix4,
   Mesh,
   MeshBasicMaterial,
-  MeshPhysicalMaterial,
   MeshStandardMaterial,
   NeutralToneMapping,
   NoToneMapping,
@@ -31,6 +30,7 @@ import {
   PCFShadowMap,
   PMREMGenerator,
   PlaneGeometry,
+  RingGeometry,
   Quaternion,
   SphereGeometry,
   SRGBColorSpace,
@@ -40,7 +40,9 @@ import {
 import type { Material, Texture, ToneMapping } from '@iwsdk/core';
 import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js';
 import { dims, isSymmetric, Library, studGeometry, TABS } from './blocks.js';
+import { DesktopControls } from './desktop.js';
 import { ENVS, finishIndex, FINISHES, makeBackdrop, makeEnvScene, makeFinish, paintBackdrop, STYLES } from './look.js';
+import { progress } from './splash.js';
 
 // ---- Platform (world meters ÷ the Size scale = platform-local units) ----
 const PLATE_T = 0.008;
@@ -57,7 +59,11 @@ const CTRL_TIP = 0.035;
 const CTRL_REACH = 0.04;
 const HAND_REACH = 0.028;
 const PINCH_ON = 0.018;
-const PINCH_OFF = 0.035;
+const PINCH_OFF = 0.03;
+const PINCH_OPENING = 0.022; // a held block stops following once the pinch opens this far
+const LOST_GRACE = 0.3; // seconds a hand may drop out of tracking before what it holds is let go (parked)
+const MID_ON = 0.015; // middle-finger pinch (duplicate) needs the index finger clearly open
+const INDEX_OPEN = 0.04;
 const HOLD_DIST = 0.08;
 const CELL = 0.016; // connector hash cell (2 studs)
 const FACING = -0.77; // connectors must face each other within ~40°
@@ -74,6 +80,7 @@ const CELL_W = 0.07;
 const CELL_H = 0.062;
 const GAP = 0.005;
 const MARGIN = 0.012;
+const PANEL_BG = 0x1b1f29;
 const PREVIEW_FIT = 0.042;
 const SLOTS = 6;
 const KITS = [
@@ -133,6 +140,7 @@ function styleValues(k: number): Record<string, number> {
     foveation: 1,
   };
 }
+const LOOK_VERSION = 2; // bump when stored look settings stop meaning the same thing
 const TONES: Array<[string, ToneMapping]> = [
   ['Neutral', NeutralToneMapping],
   ['ACES', ACESFilmicToneMapping],
@@ -208,6 +216,7 @@ interface Panel {
   h: number;
   items: UiItem[];
   content: Entity[]; // rebuilt on layout
+  owned: Array<{ dispose(): void }>; // GPU resources made for the current layout
   bar: Mesh;
   resize: Mesh | null;
 }
@@ -226,6 +235,8 @@ interface UiItem {
   tex?: CanvasTexture;
   preview?: Mesh;
   hover: boolean;
+  sig?: string; // what was last drawn (see drawUi)
+  slot?: [InstancedMesh, number]; // swatches: their instance
 }
 
 type TargetKind = 'placed' | 'loose' | 'cell' | 'ui' | 'edge' | 'corner' | 'bar' | 'resize';
@@ -243,7 +254,7 @@ interface Target {
 
 interface HandState {
   hand: Hand;
-  mode: 'none' | 'controller' | 'hand';
+  mode: 'none' | 'controller' | 'hand' | 'mouse'; // mouse: the desktop cursor, as the right hand
   rayOrigin: Vector3;
   rayDir: Vector3;
   point: Vector3;
@@ -255,6 +266,23 @@ interface HandState {
   pinching: boolean;
   midPinching: boolean;
   pokeLatched: boolean;
+  pokeArmed: boolean; // fingertip came from in front of the panel (a poke has to arrive, not slide in)
+  pinchGap: number; // thumb–index distance
+  midGap: number; // thumb–middle distance
+  closing: number; // seconds left of "fingers closing toward a pinch": aim is held still
+  aimOrigin: Vector3; // hand: smoothed ray
+  aimDir: Vector3;
+  pinchRing: Mesh; // hand: shows how close the pinch is
+  overTrash: boolean; // holding pieces over the library, where letting go removes them
+  lost: number; // seconds this hand has been untracked while holding pieces
+  recovering: boolean; // tracking came back mid-hold: re-read the pinch without firing it
+  snapOk: boolean; // the landing shown for what this hand holds (committed on release)
+  snapGen: number;
+  snapPlatform: number;
+  snapAt: Vector3;
+  snapQ: Quaternion;
+  snapShown: Placement[];
+  snapCount: number;
   target: Target | null;
   targetFar: boolean;
   pieces: Piece[] | null;
@@ -305,6 +333,20 @@ interface KitState {
 }
 
 const GRAB_BTNS: Btn[] = ['squeeze', 'trigger', 'pinch'];
+const PAD_BUTTONS: Record<Hand, Array<[Btn, string]>> = {
+  left: [
+    ['squeeze', InputComponent.Squeeze],
+    ['trigger', InputComponent.Trigger],
+    ['a', InputComponent.X_Button],
+    ['b', InputComponent.Y_Button],
+  ],
+  right: [
+    ['squeeze', InputComponent.Squeeze],
+    ['trigger', InputComponent.Trigger],
+    ['a', InputComponent.A_Button],
+    ['b', InputComponent.B_Button],
+  ],
+};
 const DUP_BTNS: Btn[] = ['a', 'mid'];
 
 export class StackerSystem extends createSystem({}) {
@@ -314,6 +356,8 @@ export class StackerSystem extends createSystem({}) {
   private matCache = new Map<string, Material>();
   private finish = 0; // finish for new blocks
   private style = 0;
+  private advanced = false; // settings panel shows environment, tone and sliders
+  private shadowDirty = true; // shadow map needs a redraw
   private envId = 'room';
   private envTex: Texture | null = null;
   private envCache = new Map<string, Texture>();
@@ -347,6 +391,12 @@ export class StackerSystem extends createSystem({}) {
   private recConns = new Map<Placed, Array<[number, Conn]>>();
   private near: Conn[] = [];
   private placedRecs: Placed[] = [];
+  private editGen = 0; // bumps on every change to the placed blocks
+  private platformGen = 0; // bumps when the platform moves, scales or resizes (snap results are platform-local)
+  private shadowFitGen = -1;
+  private buildBoxGen = -1;
+  private buildMin = new Vector3(); // bounds of everything placed, platform-local
+  private buildMax = new Vector3();
   private levelAnim: { from: Quaternion; to: Quaternion; t: number } | null = null;
 
   // Panels
@@ -380,6 +430,14 @@ export class StackerSystem extends createSystem({}) {
   private poofs: Array<{ entity: Entity; t: number }> = [];
   private snaps: Array<{ block: Loose; rec: Placed; fromPos: Vector3; fromQuat: Quaternion; t: number }> = [];
   private hands!: HandState[];
+  private frameDelta = 0;
+  // Undo: snapshots of the placed blocks and plate, taken whenever an edit settles.
+  private undoStack: string[] = [];
+  private redoStack: string[] = [];
+  private stable = ''; // the last settled state
+  private edited = false;
+  private armed: { id: string; at: number } | null = null; // a destructive button waiting for its confirming tap
+  private desktop!: DesktopControls;
   private dirty = false;
   private visualDirty = false;
   private saveTimer = 0;
@@ -448,13 +506,22 @@ export class StackerSystem extends createSystem({}) {
     };
     this.renderer.xr.addEventListener('sessionstart', onSessionStart);
 
-    const keys: Record<string, string> = { r: 'recenter', c: 'clear', s: 'showcase' };
-    const onKey = (ev: KeyboardEvent) => {
-      if (this.ready && keys[ev.key]) this.onButton(keys[ev.key]);
+    this.desktop = new DesktopControls(this.renderer.domElement);
+    const onDesktop = (ev: Event) => {
+      this.desktop.enabled = (ev as CustomEvent<boolean>).detail;
+      if (!this.ready) return;
+      if (this.desktop.enabled) {
+        const r = this.root.object3D!;
+        this.placeDefault(r.position.clone(), this.yawOf(r.quaternion));
+        this.frameCamera();
+        this.builtForXR = false; // re-place everything around the head on the next XR entry
+      } else this.desktop.setCursor('');
+      this.applyVisuals();
     };
-    window.addEventListener('keydown', onKey);
+    window.addEventListener('stacker:desktop', onDesktop);
     this.cleanupFuncs.push(
-      () => window.removeEventListener('keydown', onKey),
+      () => window.removeEventListener('stacker:desktop', onDesktop),
+      () => this.desktop.dispose(),
       () => this.renderer.xr.removeEventListener('sessionstart', onSessionStart),
       this.visibilityState.subscribe((state) => {
         if (state === VisibilityState.Visible && !this.builtForXR) {
@@ -468,7 +535,8 @@ export class StackerSystem extends createSystem({}) {
       this.lib = lib;
       this.colors = lib.linearColors();
       this.color = lib.colorIndex.get(4) ?? 0;
-      const v = this.readStore('stacker.look') as {
+      const stored = this.readStore('stacker.look') as {
+        version?: number;
         style?: number;
         visual?: Record<string, number>;
         tone?: number;
@@ -476,6 +544,8 @@ export class StackerSystem extends createSystem({}) {
         finish?: number;
         instructions?: Instructions;
       } | null;
+      // Looks saved before the lighting rework (v2) don't carry over; keep only the guide mode.
+      const v = stored?.version === LOOK_VERSION ? stored : { instructions: stored?.instructions };
       this.style = Math.min(STYLES.length - 1, v?.style ?? 0);
       this.visual = { ...styleValues(this.style), ...(v?.visual ?? {}) };
       this.tone = v?.tone ?? STYLES[this.style].tone;
@@ -495,34 +565,70 @@ export class StackerSystem extends createSystem({}) {
       this.placeDefault(new Vector3(0, 0.8, -0.5), 0);
       const saved = this.readStore('stacker.autosave');
       if (saved) this.deserialize(saved);
+      this.stable = this.snapshot();
+      this.edited = false;
       this.applyVisuals();
       this.ready = true;
+      if (this.desktop.enabled) this.frameCamera();
+      progress(1, 'Ready');
+      window.dispatchEvent(new Event('stacker:ready'));
+    }).catch((err: unknown) => {
+      console.error(err);
+      progress(0, "Couldn't load the parts. Check your connection and reload.");
     });
   }
 
   update(delta: number): void {
     if (!this.ready) return;
     this.time += delta;
+    this.frameDelta = delta;
+    this.updateDesktop();
     // Keep our reflection environment in place (IWSDK's own IBL may reassert itself).
     if (this.envTex && this.scene.environment !== this.envTex) this.scene.environment = this.envTex;
+    if (this.scene.environmentIntensity !== this.visual.envStrength) this.scene.environmentIntensity = this.visual.envStrength;
     this.ghostLineMat.opacity = 0.55 + 0.4 * Math.sin(this.time * 5);
     this.tickStats(delta);
+
     if (this.recenterDelay >= 0) {
       this.recenterDelay -= delta;
       if (this.recenterDelay < 0) this.recenter();
     }
-    for (const h of this.hands) this.updateHand(h, delta);
+    let trash = false;
+    for (const h of this.hands) {
+      this.updateHand(h, delta);
+      trash ||= !!h.pieces && h.overTrash;
+    }
+    // The library turns red while a held block is over it: letting go removes it.
+    (this.library.bg.material as MeshBasicMaterial).color.setHex(trash ? 0x5c1f27 : PANEL_BG);
     this.tickSnaps(delta);
     this.tickPoofs(delta);
     this.tickLevel(delta);
+    this.settleUndo();
+    if (this.shadowFitGen !== this.editGen && !this.busy()) {
+      this.shadowFitGen = this.editGen;
+      this.aimKeyLight(); // the shadow frustum covers the build's height
+    }
+    if (this.armed && this.time - this.armed.at > 3) {
+      this.armed = null;
+      this.redrawUi();
+    }
     this.spinPreviews(delta);
     if (this.mini) this.mini.rotation.y += delta * 0.35;
     this.updateSelectionOutlines();
+    // Redraw shadows only while something that casts them moves, or after a change —
+    // last, so everything this frame changed is in.
+    let moving = this.shadowDirty || this.snaps.length > 0 || this.poofs.length > 0;
+    for (const h of this.hands) moving ||= !!h.pieces || h.frame === 'platform' || h.frame === 'shelf';
+    if (moving) {
+      this.renderer.shadowMap.needsUpdate = true;
+      this.shadowDirty = false;
+    }
     this.saveTimer += delta;
     if (this.saveTimer > 1) {
-      if (this.dirty) this.writeStore('stacker.autosave', this.serialize());
+      if (this.dirty && !this.busy()) this.writeStore('stacker.autosave', this.serialize());
       if (this.visualDirty) {
         this.writeStore('stacker.look', {
+          version: LOOK_VERSION,
           style: this.style,
           visual: this.visual,
           tone: this.tone,
@@ -531,7 +637,8 @@ export class StackerSystem extends createSystem({}) {
           instructions: this.instructions,
         });
       }
-      this.dirty = this.visualDirty = false;
+      if (!this.busy()) this.dirty = false;
+      this.visualDirty = false;
       this.saveTimer = 0;
     }
   }
@@ -556,15 +663,8 @@ export class StackerSystem extends createSystem({}) {
     this.keyLight.castShadow = true;
     this.keyLight.shadow.mapSize.set(1024, 1024);
     this.keyLight.shadow.bias = -0.0004;
-    this.keyLight.shadow.normalBias = 0.0015;
-    const cam = this.keyLight.shadow.camera;
-    cam.left = -0.6;
-    cam.right = 0.6;
-    cam.top = 0.6;
-    cam.bottom = -0.6;
-    cam.near = 0.1;
-    cam.far = 4;
-    cam.updateProjectionMatrix();
+    // Shadows are redrawn only when something changes (see update()).
+    this.renderer.shadowMap.autoUpdate = false;
     this.world.createTransformEntity(this.keyLight, { persistent: true });
     this.world.createTransformEntity(this.keyLight.target, { persistent: true });
   }
@@ -582,58 +682,63 @@ export class StackerSystem extends createSystem({}) {
       .applyQuaternion(r.quaternion)
       .add(center);
     this.keyLight.target.position.copy(center);
+    this.platformGen++;
+    this.fitShadow(dist);
+  }
+
+  /**
+   * Fit the shadow camera tightly around the plate, and size the map so the chosen
+   * softness is a few texels of blur (PCF bands past ~4 texels). Soft looks get a
+   * smaller, cheaper map; crisp looks get up to 2048².
+   */
+  private fitShadow(dist: number): void {
+    const P = dims.pitch * this.scale;
+    const { x0, x1, z0, z1 } = this.bounds;
+    // A sphere around the plate center holding the plate and everything built on it.
+    const height = this.buildBox() ? Math.max(0, this.buildMax.y) * this.scale : 0;
+    const r = Math.hypot(0.5 * Math.hypot((x1 - x0) * P, (z1 - z0) * P), height) + 0.02 * this.scale;
+    const blur = Math.max(0.3, this.visual.shadowSoft) * 0.0012 * this.scale; // meters of penumbra
+    const size = Math.min(2048, Math.max(512, 2 ** Math.round(Math.log2((2 * r * 3) / blur))));
+    const shadow = this.keyLight.shadow;
+    if (shadow.mapSize.x !== size) {
+      shadow.mapSize.set(size, size);
+      shadow.map?.dispose();
+      shadow.map = null;
+    }
+    const texel = (2 * r) / size;
+    shadow.radius = Math.min(4, blur / texel);
+    shadow.normalBias = texel * 1.5;
+    const cam = shadow.camera;
+    cam.left = cam.bottom = -r;
+    cam.right = cam.top = r;
+    cam.near = Math.max(0.01, dist - 2 * r);
+    cam.far = dist + 2 * r;
+    cam.updateProjectionMatrix();
+    this.shadowDirty = true;
   }
 
   /**
    * The material for a finish and color (color null = white, tinted per instance for
-   * placed blocks). See-through palette colors are shown as glass when the finish is
-   * opaque. A style can force one finish, and one color, on every block.
+   * placed blocks). See-through palette colors are shown as clear plastic.
    */
-  private matFor(finish: number, color: number | null, raw = false): Material {
-    const st = raw ? STYLES[0] : STYLES[this.style];
-    let f = st.finish ? finishIndex(st.finish) : finish;
-    if (color !== null && this.lib.isTrans(color) && !FINISHES[f].trans && !st.solid) f = finishIndex('glass');
-    const key = `${f}|${color ?? '*'}|${st.solid ?? ''}|${st.finish ?? ''}`;
+  private matFor(finish: number, color: number | null): Material {
+    const f = color === null ? finish : this.shownFinish(finish, color);
+    const key = `${f}|${color ?? '*'}`;
     let m = this.matCache.get(key);
     if (!m) {
-      m = makeFinish(FINISHES[f], color === null ? null : this.colors[color], st.solid ? new Color(st.solid) : null);
+      m = makeFinish(FINISHES[f], color === null ? null : this.colors[color]);
       this.matCache.set(key, m);
-      this.tuneMaterial(m);
     }
     return m;
   }
 
-  /** The finish a block actually renders with (see-through colors become glass). */
+  /** The finish a block actually renders with (see-through colors become clear plastic). */
   private shownFinish(finish: number, color: number): number {
-    const st = STYLES[this.style];
-    if (st.finish) return finishIndex(st.finish);
-    return this.lib.isTrans(color) && !FINISHES[finish].trans ? finishIndex('glass') : finish;
+    return this.lib.isTrans(color) && !FINISHES[finish].trans ? finishIndex('clear') : finish;
   }
 
   private isSeeThrough(finish: number, color: number): boolean {
     return !!FINISHES[this.shownFinish(finish, color)].trans;
-  }
-
-  private tuneMaterial(m: Material): void {
-    const std = m as MeshStandardMaterial;
-    if ('envMapIntensity' in std) std.envMapIntensity = (std.userData.envBase ?? 1) * this.visual.envStrength;
-  }
-
-  /** Re-point every block, preview and swatch at the right material (after a style or finish change). */
-  private refreshMaterials(): void {
-    for (const b of this.batches.values()) {
-      const fin = Number(b.key.split('|')[1]);
-      b.mesh.material = this.matFor(fin, null);
-      b.mesh.castShadow = !FINISHES[this.shownFinishKey(fin)].trans;
-    }
-    for (const l of this.loose) l.mesh.material = this.matFor(l.finish, l.color);
-    this.layoutLibrary();
-    if (this.manual && this.kit) this.showPage(this.kit.page);
-  }
-
-  private shownFinishKey(fin: number): number {
-    const st = STYLES[this.style];
-    return st.finish ? finishIndex(st.finish) : fin;
   }
 
   /** Pick an art direction: environment, backdrop, lights, camera, plate, block overrides. */
@@ -643,7 +748,6 @@ export class StackerSystem extends createSystem({}) {
     this.visual = { ...styleValues(k), size: this.scale };
     this.tone = st.tone;
     this.setEnv(st.env);
-    this.refreshMaterials();
     this.applyVisuals();
     this.visualDirty = true;
     this.redrawUi();
@@ -678,15 +782,16 @@ export class StackerSystem extends createSystem({}) {
     this.keyLight.castShadow = shadows;
     this.renderer.shadowMap.enabled = shadows;
     this.keyLight.shadow.intensity = v.shadow;
-    this.keyLight.shadow.radius = v.shadowSoft;
     this.scene.environmentRotation.set(0, (v.envTurn * Math.PI) / 180, 0);
-    for (const m of this.matCache.values()) this.tuneMaterial(m);
+    // three ignores material.envMapIntensity for scene.environment; this is the one dial.
+    this.scene.environmentIntensity = v.envStrength;
     paintBackdrop(this.backdrop, st.backdrop[0], st.backdrop[1]);
-    (this.backdrop.material as MeshBasicMaterial).opacity = v.backdrop;
-    this.backdrop.visible = v.backdrop > 0.01;
+    // No passthrough on a desktop: the backdrop stands in for the room.
+    const backdrop = this.desktop.enabled && !this.renderer.xr.isPresenting ? 1 : v.backdrop;
+    (this.backdrop.material as MeshBasicMaterial).opacity = backdrop;
+    this.backdrop.visible = backdrop > 0.01;
     if (this.plateMat) {
       this.plateMat.color.set(st.plate).multiplyScalar(v.plate);
-      this.plateMat.envMapIntensity = v.envStrength;
     }
     if (this.renderer.xr.isPresenting) this.renderer.xr.setFoveation(v.foveation);
     if (this.root) this.aimKeyLight();
@@ -783,7 +888,7 @@ export class StackerSystem extends createSystem({}) {
     this.corners[2].position.set(x0 * P - c, y, z1 * P + c);
     this.corners[3].position.set(x1 * P + c, y, z1 * P + c);
     for (const h of [...this.edges, ...this.corners]) h.scale.setScalar(1 / s);
-    this.dirty = true;
+    this.dirty = this.shadowDirty = this.edited = true;
   }
 
   private plateCenter(out: Vector3): Vector3 {
@@ -823,9 +928,16 @@ export class StackerSystem extends createSystem({}) {
       obj.quaternion.copy(r.quaternion).multiply(this.q1.setFromEuler(this.euler.set(tilt, yawOff, 0, 'YXZ')));
       obj.updateMatrixWorld(true);
     };
-    place(this.library.entity.object3D!, x0 * P - 0.21, 0.17, zc + 0.06, 0.55, -0.3);
-    place(this.settings.entity.object3D!, x0 * P - 0.6, 0.2, zc + 0.24, 1.05, -0.25);
-    if (this.manual) place(this.manual.entity.object3D!, x1 * P + 0.2, 0.24, zc - 0.08, -0.55, -0.3);
+    if (this.desktop.enabled && !this.renderer.xr.isPresenting) {
+      // Desktop: panels stand upright behind the plate's sides, facing a camera out front.
+      place(this.library.entity.object3D!, x0 * P - 0.2, this.library.h / 2 - 0.02, z0 * P + 0.08, 0.3, 0);
+      place(this.settings.entity.object3D!, x1 * P + 0.28, this.settings.h / 2 - 0.02, z0 * P + 0.02, -0.3, 0);
+      if (this.manual) place(this.manual.entity.object3D!, x1 * P + 0.22, 0.24, zc + 0.12, -0.7, -0.2);
+    } else {
+      place(this.library.entity.object3D!, x0 * P - 0.21, 0.17, zc + 0.06, 0.55, -0.3);
+      place(this.settings.entity.object3D!, x0 * P - 0.6, 0.2 + (0.57 - this.settings.h) / 2, zc + 0.24, 1.05, -0.25);
+      if (this.manual) place(this.manual.entity.object3D!, x1 * P + 0.2, 0.24, zc - 0.08, -0.55, -0.3);
+    }
     if (this.shelf) this.placeShelf();
     this.aimKeyLight();
   }
@@ -854,7 +966,7 @@ export class StackerSystem extends createSystem({}) {
     const bg = new Mesh(
       new RoundedBoxGeometry(1, 1, 1, 2, 0.02).translate(0, 0, -0.5),
       // Unlit, so panels read the same whatever the lighting settings are.
-      new MeshBasicMaterial({ color: 0x1b1f29 }),
+      new MeshBasicMaterial({ color: PANEL_BG }),
     );
     bg.name = `Panel:${id}`;
     const holder = new Object3D();
@@ -872,7 +984,7 @@ export class StackerSystem extends createSystem({}) {
       resize.name = 'PanelResize';
       this.child(entity, resize);
     }
-    const panel: Panel = { id, entity, bg, w, h, items: [], content: [], bar, resize };
+    const panel: Panel = { id, entity, bg, w, h, items: [], content: [], owned: [], bar, resize };
     this.panels.push(panel);
     this.sizePanel(panel);
     return panel;
@@ -885,12 +997,23 @@ export class StackerSystem extends createSystem({}) {
   }
 
   private clearPanel(p: Panel): void {
-    for (const item of p.items) item.tex?.dispose();
+    // Hands pointing at items about to go away let go of them.
+    for (const h of this.hands ?? []) {
+      if (h.target?.ui?.panel === p) h.target = null;
+      if (h.slider?.panel === p) {
+        h.slider = null;
+        h.holdButton = null;
+      }
+    }
+    // entity.destroy() doesn't free GPU buffers; shared part geometry and block
+    // materials must survive, so only what this layout made is disposed.
+    for (const r of p.owned) r.dispose();
     for (const e of p.content) e.destroy();
     const gone = new Set(p.content);
     this.built = this.built.filter((e) => !gone.has(e));
     p.items = [];
     p.content = [];
+    p.owned = [];
   }
 
   private destroyPanel(p: Panel): void {
@@ -912,6 +1035,7 @@ export class StackerSystem extends createSystem({}) {
     const tex = new CanvasTexture(canvas);
     tex.colorSpace = SRGBColorSpace;
     const mesh = new Mesh(new PlaneGeometry(w, h), new MeshBasicMaterial({ map: tex, toneMapped: false, transparent: true }));
+    p.owned.push(tex, mesh.geometry, mesh.material as Material);
     mesh.position.set(x, y, 0.001);
     this.addContent(p, mesh);
     const item: UiItem = { id, kind, value, x, y, w, h, mesh, panel: p, canvas, tex, hover: false };
@@ -930,10 +1054,20 @@ export class StackerSystem extends createSystem({}) {
     const inner = W - 2 * MARGIN;
     let y = H / 2 - MARGIN;
 
-    const toolW = (inner - 3 * GAP) / 4;
-    ['tool:build', 'tool:select', 'tool:paint', 'deselect'].forEach((id, k) =>
-      this.addUi(p, id, 'button', 0, left + toolW / 2 + k * (toolW + GAP), y - 0.012, toolW, 0.024),
-    );
+    const tools: Array<[string, number]> = [
+      ['tool:build', 1],
+      ['tool:select', 1],
+      ['tool:paint', 1],
+      ['deselect', 1.2],
+      ['undo', 1],
+      ['redo', 0.45],
+    ];
+    const unit = (inner - (tools.length - 1) * GAP) / tools.reduce((sum, [, wt]) => sum + wt, 0);
+    let tx = left;
+    for (const [id, wt] of tools) {
+      this.addUi(p, id, 'button', 0, tx + (unit * wt) / 2, y - 0.012, unit * wt, 0.024);
+      tx += unit * wt + GAP;
+    }
     y -= 0.024 + GAP;
     const tabW = 0.05;
     const perRow = Math.max(1, Math.floor((inner + GAP) / (tabW + GAP)));
@@ -952,15 +1086,29 @@ export class StackerSystem extends createSystem({}) {
     const swPer = Math.max(4, Math.floor((inner + 0.0015) / sw));
     const swRows = Math.ceil(this.lib.colors.length / swPer);
     const swatchGeo = new RoundedBoxGeometry(0.0165, 0.0165, 0.005, 2, 0.003);
+    p.owned.push(swatchGeo);
+    // Two draws for all the swatches: opaque colors as plastic, see-through ones as clear.
+    const trans = this.lib.colors.filter((_, k) => this.lib.isTrans(k)).length;
+    const sets = [finishIndex('plastic'), finishIndex('clear')].map((fin, j) => {
+      const im = new InstancedMesh(swatchGeo, this.matFor(fin, null), j ? trans : this.lib.colors.length - trans);
+      im.frustumCulled = false;
+      p.owned.push(im);
+      this.addContent(p, im);
+      return { im, n: 0 };
+    });
     this.lib.colors.forEach((_, k) => {
       const row = swRows - 1 - Math.floor(k / swPer);
       const inRow = Math.min(swPer, this.lib.colors.length - Math.floor(k / swPer) * swPer);
       const x = ((k % swPer) - (inRow - 1) / 2) * sw;
       const yy = yb + 0.01 + row * 0.02;
-      const mesh = new Mesh(swatchGeo, this.matFor(finishIndex('satin'), k, true));
+      const set = sets[this.lib.isTrans(k) ? 1 : 0];
+      set.im.setColorAt(set.n, this.colors[k]);
+      // An invisible marker keeps the swatch's place for hit tests and probes.
+      const mesh = new Mesh();
+      mesh.visible = false;
       mesh.position.set(x, yy, 0.004);
       this.addContent(p, mesh);
-      p.items.push({ id: `swatch:${k}`, kind: 'swatch', value: k, x, y: yy, w: 0.018, h: 0.019, mesh, panel: p, hover: false });
+      p.items.push({ id: `swatch:${k}`, kind: 'swatch', value: k, x, y: yy, w: 0.018, h: 0.019, mesh, panel: p, hover: false, slot: [set.im, set.n++] });
     });
     yb += swRows * 0.02 + GAP;
     // Finishes: what the next block is made of (and, with a selection, restyles it).
@@ -968,13 +1116,14 @@ export class StackerSystem extends createSystem({}) {
     const fPer = Math.max(1, Math.floor((inner + GAP) / (fw + GAP)));
     const fRows = Math.ceil(FINISHES.length / fPer);
     const ball = new SphereGeometry(0.0055, 20, 12);
+    p.owned.push(ball);
     FINISHES.forEach((_, k) => {
       const row = fRows - 1 - Math.floor(k / fPer);
       const col = k % fPer;
       const x = left + fw / 2 + col * (fw + GAP);
       const yy = yb + 0.012 + row * (0.024 + GAP);
       const item = this.addUi(p, `finish:${k}`, 'finish', k, x, yy, fw, 0.024);
-      const sphere = new Mesh(ball, this.matFor(k, this.color, true));
+      const sphere = new Mesh(ball, this.matFor(k, this.color));
       sphere.position.set(x - fw / 2 + 0.008, yy, 0.007);
       this.addContent(p, sphere);
       item.preview = sphere;
@@ -994,7 +1143,7 @@ export class StackerSystem extends createSystem({}) {
       const x = -gridW / 2 + CELL_W / 2 + (k % cols) * (CELL_W + GAP);
       const yy = y - CELL_H / 2 - Math.floor(k / cols) * (CELL_H + GAP);
       const item = this.addUi(p, `cell:${k}`, 'cell', k, x, yy, CELL_W, CELL_H);
-      const preview = new Mesh(this.lib.geometries[0], this.matFor(this.finish, this.color, true));
+      const preview = new Mesh(this.lib.geometries[0], this.matFor(this.finish, this.color));
       preview.name = 'CatalogItem';
       preview.position.set(x, yy + 0.007, 0.022);
       this.addContent(p, preview);
@@ -1005,42 +1154,55 @@ export class StackerSystem extends createSystem({}) {
     this.selectColor(this.color);
   }
 
-  /** Settings: stats, app buttons, rendering toggles, and two columns of sliders. */
+  /** Settings rows: stats, app buttons, look presets and size — plus, under Advanced, environment, tone and sliders. */
+  private settingsRows(): Array<[kind: 'stats' | 'head' | 'row', ids: string[]]> {
+    const rows: Array<['stats' | 'head' | 'row', string[]]> = [
+      ['stats', ['stats']],
+      ['row', ['recenter', 'instructions', 'clear']],
+      ['head', ['head:look']],
+    ];
+    for (let k = 0; k < STYLES.length; k += 3) rows.push(['row', STYLES.slice(k, k + 3).map((_, j) => `style:${k + j}`)]);
+    rows.push(['row', ['slider:size', 'advanced']]);
+    if (!this.advanced) return rows;
+    rows.push(['head', ['head:env']], ['row', ENVS.map((e) => `env:${e.id}`)], ['row', ['tone', 'reset', 'hz', 'stress']], ['head', ['head:tune']]);
+    const tune = SLIDERS.filter((d) => d.id !== 'size');
+    for (let k = 0; k < tune.length; k += 2) rows.push(['row', tune.slice(k, k + 2).map((d) => `slider:${d.id}`)]);
+    return rows;
+  }
+
+  private rowHeight(kind: string, ids: string[]): number {
+    if (kind === 'stats') return 0.035;
+    if (kind === 'head') return 0.016;
+    return ids.some((id) => id.startsWith('slider:')) ? 0.026 : 0.024;
+  }
+
   private layoutSettings(): void {
     const p = this.settings;
     this.clearPanel(p);
-    const W = p.w;
-    const H = p.h;
-    const left = -W / 2 + MARGIN;
-    const inner = W - 2 * MARGIN;
-    let y = H / 2 - MARGIN;
-    const stats = this.addUi(p, 'stats', 'label', 0, 0, y - 0.0175, inner, 0.035);
+    const rows = this.settingsRows();
+    const h = rows.reduce((sum, [kind, ids]) => sum + this.rowHeight(kind, ids) + GAP, 2 * MARGIN - GAP);
+    if (Math.abs(h - p.h) > 1e-4) {
+      // Grow or shrink downward, keeping the top edge in place.
+      p.entity.object3D!.translateY((p.h - h) / 2);
+      p.h = h;
+      this.sizePanel(p);
+    }
+    const left = -p.w / 2 + MARGIN;
+    const inner = p.w - 2 * MARGIN;
+    let y = p.h / 2 - MARGIN;
+    for (const [kind, ids] of rows) {
+      const rh = this.rowHeight(kind, ids);
+      const w = (inner - (ids.length - 1) * GAP) / ids.length;
+      ids.forEach((id, k) => {
+        const x = kind === 'row' ? left + w / 2 + k * (w + GAP) : 0;
+        const itemKind = kind === 'row' ? (id.startsWith('slider:') ? 'slider' : 'button') : 'label';
+        this.addUi(p, id, itemKind, 0, x, y - rh / 2, kind === 'row' ? w : inner, rh);
+      });
+      y -= rh + GAP;
+    }
+    const stats = p.items.find((u) => u.id === 'stats')!;
     this.statsCanvas = stats.canvas!;
     this.statsTex = stats.tex!;
-    y -= 0.035 + GAP;
-    const rowItems = (ids: string[]) => {
-      const w = (inner - (ids.length - 1) * GAP) / ids.length;
-      ids.forEach((id, k) => this.addUi(p, id, 'button', 0, left + w / 2 + k * (w + GAP), y - 0.012, w, 0.024));
-      y -= 0.024 + GAP;
-    };
-    rowItems(['hz', 'stress', 'recenter', 'clear', 'instructions']);
-    const heading = (id: string) => {
-      this.addUi(p, `head:${id}`, 'label', 0, 0, y - 0.008, inner, 0.016);
-      y -= 0.016 + GAP;
-    };
-    heading('style');
-    for (let r = 0; r < STYLES.length / 4; r++) rowItems(STYLES.slice(r * 4, r * 4 + 4).map((_, k) => `style:${r * 4 + k}`));
-    heading('env');
-    rowItems(ENVS.map((e) => `env:${e.id}`));
-    rowItems(['tone', 'reset']);
-    heading('tune');
-    const colW = (inner - GAP) / 2;
-    const perCol = Math.ceil(SLIDERS.length / 2);
-    SLIDERS.forEach((def, k) => {
-      const col = Math.floor(k / perCol);
-      const row = k % perCol;
-      this.addUi(p, `slider:${def.id}`, 'slider', 0, left + colW / 2 + col * (colW + GAP), y - 0.013 - row * (0.026 + GAP), colW, 0.026);
-    });
     this.drawStats();
   }
 
@@ -1048,12 +1210,17 @@ export class StackerSystem extends createSystem({}) {
     return TAB_NAMES[this.tab];
   }
 
+  private tabPartsCache = new Map<string, number[]>();
   private tabParts(): number[] {
     const name = this.tabName();
-    const out: number[] = [];
-    this.lib.parts.forEach((p, i) => {
-      if (p.tab === name) out.push(i);
-    });
+    let out = this.tabPartsCache.get(name);
+    if (!out) {
+      out = [];
+      this.lib.parts.forEach((p, i) => {
+        if (p.tab === name) out!.push(i);
+      });
+      this.tabPartsCache.set(name, out);
+    }
     return out;
   }
 
@@ -1077,8 +1244,14 @@ export class StackerSystem extends createSystem({}) {
     return this.cellPart(cell) >= 0;
   }
 
+  private cellItems: UiItem[] = [];
+  private cellItemsOf: UiItem[] | null = null;
   private cells(): UiItem[] {
-    return this.library.items.filter((u) => u.kind === 'cell');
+    if (this.cellItemsOf !== this.library.items) {
+      this.cellItemsOf = this.library.items;
+      this.cellItems = this.library.items.filter((u) => u.kind === 'cell');
+    }
+    return this.cellItems;
   }
 
   private showTab(tab: number, page = 0): void {
@@ -1094,7 +1267,7 @@ export class StackerSystem extends createSystem({}) {
       mesh.geometry = this.lib.geometries[part];
       const extent = Math.max(def.w * dims.pitch, def.d * dims.pitch, def.h * dims.unit);
       mesh.scale.setScalar(Math.min(4, PREVIEW_FIT / extent));
-      mesh.material = this.matFor(this.finish, figs ? this.colorOf(this.lib.minifigs.presets[item.value].torso) : this.color, true);
+      mesh.material = this.matFor(this.finish, figs ? this.colorOf(this.lib.minifigs.presets[item.value].torso) : this.color);
     }
     for (const item of this.library.items) if (item.kind !== 'swatch') this.drawUi(item);
   }
@@ -1105,13 +1278,16 @@ export class StackerSystem extends createSystem({}) {
 
   private selectColor(k: number): void {
     this.color = k;
-    if (this.tabName() !== 'Minifigs') for (const c of this.cells()) c.preview!.material = this.matFor(this.finish, k, true);
-    for (const item of this.library.items) if (item.kind === 'finish') item.preview!.material = this.matFor(item.value, k, true);
+    if (this.tabName() !== 'Minifigs') for (const c of this.cells()) c.preview!.material = this.matFor(this.finish, k);
+    for (const item of this.library.items) if (item.kind === 'finish') item.preview!.material = this.matFor(item.value, k);
     for (const item of this.library.items) {
-      if (item.kind !== 'swatch') continue;
+      if (!item.slot) continue;
       const on = item.value === k;
-      item.mesh.scale.setScalar(on ? 1.3 : item.hover ? 1.15 : 1);
-      item.mesh.position.z = on ? 0.009 : 0.004;
+      const [im, n] = item.slot;
+      const sc = on ? 1.3 : item.hover ? 1.15 : 1;
+      this.m1.makeScale(sc, sc, sc).setPosition(item.x, item.y, on ? 0.009 : 0.004);
+      im.setMatrixAt(n, this.m1);
+      im.instanceMatrix.needsUpdate = true;
     }
   }
 
@@ -1139,17 +1315,23 @@ export class StackerSystem extends createSystem({}) {
         return rate ? `${Math.round(rate)} Hz` : 'Hz';
       }
       case 'stress':
-        return 'Stress';
+        return this.isArmed('stress') ? 'Replace build?' : 'Stress';
       case 'recenter':
         return 'Recenter';
       case 'clear':
-        return 'Clear';
+        return this.isArmed('clear') ? 'Tap to confirm' : 'Clear';
+      case 'undo':
+        return '↶ Undo';
+      case 'redo':
+        return '↷';
       case 'reset':
         return `Reset ${STYLES[this.style].name}`;
       case 'tone':
         return `Tone: ${TONES[this.tone][0]}`;
-      case 'head:style':
-        return 'Style';
+      case 'head:look':
+        return 'Look';
+      case 'advanced':
+        return this.advanced ? 'Advanced ▾' : 'Advanced ▸';
       case 'head:env':
         return 'Environment';
       case 'head:tune':
@@ -1200,7 +1382,10 @@ export class StackerSystem extends createSystem({}) {
     if (item.id.startsWith('style:')) return STYLES[Number(item.id.slice(6))].name;
     if (item.id.startsWith('env:')) return ENVS.find((e) => e.id === item.id.slice(4))!.label;
     if (item.kind === 'cell') {
-      if (name === 'Kits') return KITS[item.value] ? `${KITS[item.value].title} · ${KITS[item.value].pieces} pcs` : '';
+      if (name === 'Kits') {
+        if (!KITS[item.value]) return '';
+        return this.isArmed(item.id) ? 'Tap again · clears your build' : `${KITS[item.value].title} · ${KITS[item.value].pieces} pcs`;
+      }
       if (name === 'Saves') return item.value < SLOTS ? this.slotInfo(item.value) : '';
       if (name === 'Minifigs') return this.lib.minifigs.presets[item.value]?.name ?? '';
       const part = this.cellPart(item.value);
@@ -1223,11 +1408,17 @@ export class StackerSystem extends createSystem({}) {
   private drawUi(item: UiItem): void {
     if (!item.canvas || !item.tex) return;
     if (item.id === 'stats') return; // drawn by drawStats
+    const label = this.uiLabel(item);
+    const selected = this.uiSelected(item);
+    // Skip the canvas draw and texture upload when nothing it shows has changed.
+    const sig = `${label}|${selected}|${item.hover}|${this.uiDisabled(item)}|${this.isArmed(item.id)}|${
+      item.kind === 'cell' ? `${this.cellActive(item.value)}${this.tabName()}` : item.kind === 'slider' ? this.sliderValue(item.id.slice(7)) : ''
+    }`;
+    if (sig === item.sig) return;
+    item.sig = sig;
     const { width, height } = item.canvas;
     const ctx = item.canvas.getContext('2d')!;
     ctx.clearRect(0, 0, width, height);
-    const label = this.uiLabel(item);
-    const selected = this.uiSelected(item);
     if (item.kind === 'slider') {
       const def = SLIDERS.find((d) => `slider:${d.id}` === item.id)!;
       ctx.fillStyle = item.hover ? '#34405a' : '#252b39';
@@ -1272,13 +1463,14 @@ export class StackerSystem extends createSystem({}) {
         return;
       }
       const passive = item.kind === 'label';
+      const off = this.uiDisabled(item);
       if (!passive) {
-        ctx.fillStyle = selected ? '#5b8def' : item.hover ? '#34405a' : '#252b39';
+        ctx.fillStyle = off ? '#1f2430' : selected ? '#5b8def' : this.isArmed(item.id) ? '#b91c1c' : item.hover ? '#34405a' : '#252b39';
         ctx.beginPath();
         ctx.roundRect(3, 3, width - 6, height - 6, height * 0.3);
         ctx.fill();
       }
-      ctx.fillStyle = passive && item.id === 'credits' ? '#7c8699' : passive ? '#8b95a8' : '#ffffff';
+      ctx.fillStyle = off ? '#5b6475' : passive && item.id === 'credits' ? '#7c8699' : passive ? '#8b95a8' : '#ffffff';
       const heading = passive && item.id.startsWith('head:');
       ctx.font = `${heading ? 700 : 600} ${Math.round(height * (item.id === 'credits' ? 0.6 : heading ? 0.6 : 0.42))}px system-ui, sans-serif`;
       ctx.textAlign = item.kind === 'finish' || heading ? 'left' : 'center';
@@ -1288,6 +1480,26 @@ export class StackerSystem extends createSystem({}) {
       ctx.fillText(label, x, height / 2 + 2, width - x - 6);
     }
     item.tex.needsUpdate = true;
+  }
+
+  /** Two-tap confirm for destructive buttons: true on the second tap within 3 s. */
+  private confirm(id: string): boolean {
+    if (this.isArmed(id)) {
+      this.armed = null;
+      return true;
+    }
+    this.armed = { id, at: this.time };
+    return false;
+  }
+
+  private isArmed(id: string): boolean {
+    return !!this.armed && this.armed.id === id && this.time - this.armed.at < 3;
+  }
+
+  private uiDisabled(item: UiItem): boolean {
+    if (item.id === 'undo') return !this.undoStack.length || !!this.kit;
+    if (item.id === 'redo') return !this.redoStack.length || !!this.kit;
+    return false;
   }
 
   private sliderTrack(): [number, number] {
@@ -1305,7 +1517,8 @@ export class StackerSystem extends createSystem({}) {
     else this.drawUi(item);
   }
 
-  private pressUi(item: UiItem): void {
+  private pressUi(item: UiItem, h?: HandState): void {
+    if (h && h.mode !== 'controller' && item.kind !== 'label') this.uiTick();
     if (item.kind === 'label') return;
     this.tick(0.25);
     if (item.kind === 'tab') this.showTab(item.value);
@@ -1313,7 +1526,7 @@ export class StackerSystem extends createSystem({}) {
       this.finish = item.value;
       this.visualDirty = true;
       if (this.selection.size) for (const rec of [...this.selection]) this.recolor([rec], rec.color, item.value);
-      for (const c of this.cells()) if (c.preview && this.tabName() !== 'Minifigs') c.preview.material = this.matFor(this.finish, this.color, true);
+      for (const c of this.cells()) if (c.preview && this.tabName() !== 'Minifigs') c.preview.material = this.matFor(this.finish, this.color);
       this.redrawUi((u) => u.kind === 'finish');
     } else if (item.kind === 'swatch') {
       this.selectColor(item.value);
@@ -1332,7 +1545,11 @@ export class StackerSystem extends createSystem({}) {
 
   private pressCell(cell: number): void {
     const name = this.tabName();
-    if (name === 'Kits' && KITS[cell]) void this.startKit(KITS[cell].id, KITS[cell].title);
+    if (name === 'Kits' && KITS[cell]) {
+      // Starting a kit clears the plate: ask first if there's a build on it.
+      if (this.placedRecs.length && !this.kit && !this.confirm(`cell:${cell}`)) this.redrawUi((u) => u.kind === 'cell');
+      else void this.startKit(KITS[cell].id, KITS[cell].title);
+    }
     else if (name === 'Saves' && cell < SLOTS) {
       this.slot = cell;
       this.redrawUi();
@@ -1364,17 +1581,29 @@ export class StackerSystem extends createSystem({}) {
         break;
       }
       case 'stress':
-        this.stress();
+        if (!this.placedRecs.length || this.confirm('stress')) this.stress();
         break;
       case 'recenter':
         this.recenter();
         break;
       case 'clear':
-        this.exitKit();
-        this.clearPlaced();
+        if (this.confirm('clear')) {
+          this.exitKit();
+          this.clearPlaced();
+        }
+        break;
+      case 'undo':
+        this.undo();
+        break;
+      case 'redo':
+        this.redo();
         break;
       case 'reset':
         this.applyStyle(this.style);
+        break;
+      case 'advanced':
+        this.advanced = !this.advanced;
+        this.layoutSettings();
         break;
       case 'tone':
         this.tone = (this.tone + 1) % TONES.length;
@@ -1589,8 +1818,8 @@ export class StackerSystem extends createSystem({}) {
   }
 
   private batchFor(rec: Placed): Batch {
-    // See-through palette colors batch as glass, so each batch has one material.
-    const fin = this.lib.isTrans(rec.color) && !FINISHES[rec.finish].trans ? finishIndex('glass') : rec.finish;
+    // See-through palette colors batch as clear plastic, so each batch has one material.
+    const fin = this.shownFinish(rec.finish, rec.color);
     const key = `${rec.part}|${fin}`;
     rec.batch = key;
     let b = this.batches.get(key);
@@ -1610,7 +1839,7 @@ export class StackerSystem extends createSystem({}) {
     const mesh = new InstancedMesh(this.lib.geometries[part], this.matFor(fin, null), capacity);
     mesh.name = 'PlacedBlocks';
     mesh.frustumCulled = false;
-    mesh.castShadow = !FINISHES[this.shownFinishKey(fin)].trans;
+    mesh.castShadow = !FINISHES[fin].trans;
     mesh.receiveShadow = true;
     mesh.setColorAt(0, this.colors[0]);
     mesh.count = 0;
@@ -1619,6 +1848,7 @@ export class StackerSystem extends createSystem({}) {
       mesh.instanceColor!.array.set(from.mesh.instanceColor!.array);
       mesh.count = from.records.length;
       from.entity.destroy();
+      from.mesh.dispose(); // frees its instance buffers (geometry and material are shared)
     }
     const entity = this.child(this.root, mesh);
     return { key, entity, mesh, records: from?.records ?? [] };
@@ -1640,12 +1870,14 @@ export class StackerSystem extends createSystem({}) {
     this.writeInstance(batch, rec);
     this.indexConns(rec, true);
     this.placedRecs.push(rec);
-    this.dirty = true;
+    this.editGen++;
+    this.dirty = this.shadowDirty = this.edited = true;
   }
 
   private removePlaced(rec: Placed): void {
     const batch = this.batches.get(rec.batch);
-    if (!batch) return;
+    if (!batch || batch.records[rec.slot] !== rec) return;
+    this.editGen++;
     const last = batch.records.pop()!;
     if (last !== rec) {
       last.slot = rec.slot;
@@ -1657,7 +1889,7 @@ export class StackerSystem extends createSystem({}) {
     const k = this.placedRecs.indexOf(rec);
     if (k >= 0) this.placedRecs.splice(k, 1);
     this.selection.delete(rec);
-    this.dirty = true;
+    this.dirty = this.shadowDirty = this.edited = true;
     const target = this.kit?.matched.get(rec);
     if (target) {
       this.kit!.matched.delete(rec);
@@ -1674,7 +1906,11 @@ export class StackerSystem extends createSystem({}) {
     this.recConns.clear();
     this.placedRecs = [];
     this.selection.clear();
-    this.dirty = true;
+    this.editGen++;
+    // Blocks still animating into place would land after the clear.
+    for (const sn of this.snaps) this.dropLoose(sn.block, false);
+    this.snaps.length = 0;
+    this.dirty = this.shadowDirty = this.edited = true;
   }
 
   private recolor(recs: Placed[], color: number, finish?: number): void {
@@ -1734,6 +1970,7 @@ export class StackerSystem extends createSystem({}) {
     const entity = this.world.createTransformEntity(mesh);
     const l = { entity, mesh, part, color, finish };
     this.loose.push(l);
+    this.shadowDirty = true;
     return l;
   }
 
@@ -1992,7 +2229,9 @@ export class StackerSystem extends createSystem({}) {
     const guide = new Line(guideGeo, new LineBasicMaterial({ color: 0xfde047, transparent: true, opacity: 0.8, depthTest: false }));
     guide.frustumCulled = false;
     guide.renderOrder = 21;
-    for (const m of [outline, ray, cursor, guide]) {
+    const pinchRing = new Mesh(new RingGeometry(0.8, 1, 24), new MeshBasicMaterial({ color: 0xffffff, transparent: true, depthTest: false }));
+    pinchRing.renderOrder = 22;
+    for (const m of [outline, ray, cursor, guide, pinchRing]) {
       this.world.createTransformEntity(m, { persistent: true });
       m.visible = false;
     }
@@ -2010,6 +2249,23 @@ export class StackerSystem extends createSystem({}) {
       pinching: false,
       midPinching: false,
       pokeLatched: false,
+      pokeArmed: false,
+      pinchGap: 1,
+      midGap: 1,
+      closing: 0,
+      aimOrigin: new Vector3(),
+      aimDir: new Vector3(),
+      pinchRing,
+      overTrash: false,
+      lost: 0,
+      recovering: false,
+      snapOk: false,
+      snapGen: -1,
+      snapPlatform: -1,
+      snapAt: new Vector3(),
+      snapQ: new Quaternion(),
+      snapShown: [],
+      snapCount: 0,
       target: null,
       targetFar: false,
       pieces: null,
@@ -2052,12 +2308,22 @@ export class StackerSystem extends createSystem({}) {
     h.up.clear();
     h.hasTip = false;
     const session = this.renderer.xr.getSession();
+    if (h.hand === 'right' && !session && this.desktop.enabled) {
+      this.readMouse(h);
+      return;
+    }
     let source: XRInputSource | undefined;
     if (session) for (const s of session.inputSources) if (s.handedness === h.hand) source = s;
     const mode = !source ? 'none' : source.hand ? 'hand' : source.gamepad ? 'controller' : 'none';
     if (mode !== h.mode) {
-      if (h.holdButton) h.up.add(h.holdButton);
+      // A hand dropping out of tracking mid-hold gets a grace period (see updateHand),
+      // and when it comes back, its pinch is re-read rather than treated as new.
+      const keep = !!h.pieces && ((mode === 'none' && h.mode === 'hand') || (mode === 'hand' && h.mode === 'none'));
+      if (h.holdButton && !keep) h.up.add(h.holdButton);
+      h.recovering = keep && mode === 'hand';
+      h.closing = 0;
       h.pinching = h.midPinching = false;
+      h.aimDir.set(0, 0, 0);
       h.mode = mode;
     }
     if (mode === 'none') return;
@@ -2072,14 +2338,7 @@ export class StackerSystem extends createSystem({}) {
       h.point.copy(h.rayOrigin).addScaledVector(h.rayDir, CTRL_TIP);
       const pad = this.input.xr.gamepads[h.hand];
       if (!pad) return;
-      const right = h.hand === 'right';
-      const map: Array<[Btn, string]> = [
-        ['squeeze', InputComponent.Squeeze],
-        ['trigger', InputComponent.Trigger],
-        ['a', right ? InputComponent.A_Button : InputComponent.X_Button],
-        ['b', right ? InputComponent.B_Button : InputComponent.Y_Button],
-      ];
-      for (const [btn, id] of map) {
+      for (const [btn, id] of PAD_BUTTONS[h.hand]) {
         if (pad.getButtonDown(id)) h.down.add(btn);
         if (pad.getButtonUp(id)) h.up.add(btn);
       }
@@ -2102,6 +2361,29 @@ export class StackerSystem extends createSystem({}) {
       h.hasTip = true;
       h.point.copy(thumb).add(index).multiplyScalar(0.5);
       const gap = thumb.distanceTo(index);
+      // Fingers closing fast toward a pinch: hold the aim still for a moment, so the
+      // pinch itself doesn't knock the ray (or the near target) off what you meant.
+      if (!h.pinching && gap < 0.06 && h.pinchGap - gap > 0.0012) h.closing = 0.15;
+      else h.closing = Math.max(0, h.closing - this.frameDelta);
+      if (h.pinching) h.closing = 0;
+      h.pinchGap = gap;
+      // Steady the ray: damp small jitter, follow deliberate moves at once.
+      if (h.aimDir.lengthSq() === 0) {
+        h.aimOrigin.copy(h.rayOrigin);
+        h.aimDir.copy(h.rayDir);
+      } else if (h.closing <= 0) {
+        h.aimDir.lerp(h.rayDir, Math.min(1, 0.3 + h.aimDir.angleTo(h.rayDir) * 15)).normalize();
+        h.aimOrigin.lerp(h.rayOrigin, Math.min(1, 0.3 + h.aimOrigin.distanceTo(h.rayOrigin) * 60));
+      }
+      h.rayOrigin.copy(h.aimOrigin);
+      h.rayDir.copy(h.aimDir);
+      if (h.recovering) {
+        h.recovering = false;
+        h.pinching = gap < PINCH_OFF;
+        h.midPinching = thumb.distanceTo(middle) < PINCH_OFF;
+        if (h.holdButton && !(h.holdButton === 'mid' ? h.midPinching : h.pinching)) h.up.add(h.holdButton);
+        return;
+      }
       if (!h.pinching && gap < PINCH_ON) {
         h.pinching = true;
         h.down.add('pinch');
@@ -2110,7 +2392,8 @@ export class StackerSystem extends createSystem({}) {
         h.up.add('pinch');
       }
       const mgap = thumb.distanceTo(middle);
-      if (!h.midPinching && !h.pinching && mgap < PINCH_ON) {
+      h.midGap = mgap;
+      if (!h.midPinching && !h.pinching && gap > INDEX_OPEN && mgap < MID_ON) {
         h.midPinching = true;
         h.down.add('mid');
       } else if (h.midPinching && mgap > PINCH_OFF) {
@@ -2118,6 +2401,96 @@ export class StackerSystem extends createSystem({}) {
         h.up.add('mid');
       }
     }
+  }
+
+  /** Desktop: the cursor is a ray from the camera; left button = trigger (Alt: duplicate), Delete = B. */
+  private readMouse(h: HandState): void {
+    const d = this.desktop;
+    if (h.mode !== 'mouse') {
+      if (h.holdButton) h.up.add(h.holdButton);
+      h.closing = 0;
+      h.pinching = h.midPinching = false;
+      h.mode = 'mouse';
+    }
+    this.camera.getWorldPosition(h.rayOrigin);
+    this.camera.getWorldQuaternion(h.quat);
+    const at = d.pressed ? d.pressNdc : d.ndc; // aim the press where the button went down
+    h.rayDir.set(at.x, at.y, 0.5).unproject(this.camera).sub(h.rayOrigin).normalize();
+    h.point.copy(h.rayOrigin);
+    if (d.pressed) h.down.add(d.alt ? 'a' : 'trigger');
+    if (d.released) h.up.add('trigger').add('a');
+    if (d.actions.has('delete')) h.down.add('b');
+  }
+
+  /** Desktop view: keyboard actions and the orbit camera. */
+  private updateDesktop(): void {
+    const d = this.desktop;
+    d.poll();
+    if (!d.enabled || this.renderer.xr.isPresenting) return;
+    if (d.actions.has('undo')) this.undo();
+    if (d.actions.has('redo')) this.redo();
+    if (d.actions.has('frame')) this.frameCamera();
+    if (d.actions.has('tool1')) this.onButton('tool:build');
+    if (d.actions.has('tool2')) this.onButton('tool:select');
+    if (d.actions.has('tool3')) this.onButton('tool:paint');
+    d.applyCamera(this.camera);
+  }
+
+  /** Point the desktop camera at the platform from the front, panels in view behind it. */
+  private frameCamera(): void {
+    const r = this.root.object3D!;
+    const P = dims.pitch * this.scale;
+    const { x0, x1, z0, z1 } = this.bounds;
+    const d = this.desktop;
+    this.plateCenter(d.target).addScaledVector(this.v1.set(0, 1, 0).applyQuaternion(r.quaternion), 0.08);
+    d.azimuth = this.yawOf(r.quaternion);
+    d.elevation = 0.55;
+    d.distance = Math.max(0.8, Math.hypot((x1 - x0) * P, (z1 - z0) * P) * 2.6);
+  }
+
+  /** Where the hand's ray meets the plate's top plane, in platform-local meters (null if it doesn't). */
+  private platePoint(h: HandState, out: Vector3): Vector3 | null {
+    const r = this.root.object3D!;
+    const o = r.worldToLocal(out.copy(h.rayOrigin));
+    const d = this.v6.copy(h.rayDir).applyQuaternion(this.q2.copy(r.quaternion).invert());
+    if (d.y > -1e-4) return null;
+    return o.addScaledVector(d, -o.y / d.y);
+  }
+
+  /** Desktop carry: sit the held block on whatever is under the cursor — a placed block or the plate. */
+  private mouseDrop(h: HandState, part: number, out: Vector3): Vector3 {
+    // Over the library: follow the cursor onto the panel, where letting go removes the block.
+    const lib = this.library.entity.object3D!;
+    const ll = lib.worldToLocal(this.v4.copy(h.rayOrigin));
+    const ld = this.v2.copy(h.rayDir).applyQuaternion(lib.getWorldQuaternion(this.q2).invert());
+    let tLib = Infinity;
+    if (ld.z < -1e-4 && ll.z > 0) {
+      const tl = -ll.z / ld.z;
+      if (Math.abs(ll.x + ld.x * tl) < this.library.w / 2 && Math.abs(ll.y + ld.y * tl) < this.library.h / 2) tLib = tl;
+    }
+    const r = this.root.object3D!;
+    const P = dims.pitch;
+    const o = r.worldToLocal(this.v5.copy(h.rayOrigin));
+    const d = this.v6.copy(h.rayDir).applyQuaternion(this.q2.copy(r.quaternion).invert());
+    let t = Infinity;
+    if (d.y < -1e-4) {
+      const tp = -o.y / d.y;
+      const px = o.x + d.x * tp;
+      const pz = o.z + d.z * tp;
+      const b = this.bounds;
+      if (px > b.x0 * P - 0.02 && px < b.x1 * P + 0.02 && pz > b.z0 * P - 0.02 && pz < b.z1 * P + 0.02) t = tp;
+    }
+    for (const rec of this.placedRecs) {
+      this.halfExtents(rec.part, this.v3);
+      this.v4.copy(o).applyMatrix4(rec.mi!);
+      this.v2.copy(d).transformDirection(rec.mi!);
+      t = Math.min(t, this.rayBox(this.v4, this.v2, this.v3.x, this.v3.y, this.v3.z));
+    }
+    if (tLib < t * this.scale) return out.copy(h.rayOrigin).addScaledVector(h.rayDir, tLib - 0.01);
+    if (t === Infinity) return out.copy(h.rayOrigin).addScaledVector(h.rayDir, 0.4);
+    out.copy(o).addScaledVector(d, t);
+    out.y += this.halfExtents(part, this.v3).y + 0.001;
+    return r.localToWorld(out);
   }
 
   private pressed(h: HandState, btns: Btn[]): Btn | null {
@@ -2133,9 +2506,19 @@ export class StackerSystem extends createSystem({}) {
       h.lit.material = this.ghostLineMat;
       h.lit = null;
     }
-    const released = h.holdButton !== null && (h.up.has(h.holdButton) || h.mode === 'none');
+    const released = h.holdButton !== null && (h.up.has(h.holdButton) || (h.mode === 'none' && !h.pieces));
 
-    if (h.pieces) {
+    if (h.pieces && h.mode === 'none') {
+      // Tracking lost mid-hold: keep the pieces still for a moment, then park them
+      // where they are — never snap them somewhere the player didn't choose.
+      h.lost += delta;
+      if (h.lost > LOST_GRACE) {
+        h.pieces = null;
+        h.holdButton = null;
+        h.overTrash = false;
+      }
+    } else if (h.pieces) {
+      h.lost = 0;
       if (released) this.releasePieces(h);
       else if (h.down.has('b')) this.dropPieces(h);
       else this.holdPieces(h, delta);
@@ -2148,7 +2531,7 @@ export class StackerSystem extends createSystem({}) {
         h.holdButton = null;
       } else this.dragSlider(h);
     } else {
-      this.findTarget(h);
+      if (h.mode !== 'hand' || h.closing <= 0) this.findTarget(h);
       this.poke(h);
       if (h.painting) {
         if (released) {
@@ -2176,24 +2559,22 @@ export class StackerSystem extends createSystem({}) {
     return Math.sqrt(dx * dx + dy * dy + dz * dz);
   }
 
+  /** Ray (origin o, direction d) against a centered box: entry distance, or Infinity on a miss. */
   private rayBox(o: Vector3, d: Vector3, hx: number, hy: number, hz: number): number {
     let tmin = 0;
     let tmax = RAY_MAX * 10;
-    const axes: Array<[number, number, number]> = [
-      [o.x, d.x, hx],
-      [o.y, d.y, hy],
-      [o.z, d.z, hz],
-    ];
-    for (const [oo, dd, hh] of axes) {
+    for (let axis = 0; axis < 3; axis++) {
+      const oo = axis === 0 ? o.x : axis === 1 ? o.y : o.z;
+      const dd = axis === 0 ? d.x : axis === 1 ? d.y : d.z;
+      const hh = axis === 0 ? hx : axis === 1 ? hy : hz;
       if (Math.abs(dd) < 1e-9) {
         if (Math.abs(oo) > hh) return Infinity;
         continue;
       }
-      let t1 = (-hh - oo) / dd;
-      let t2 = (hh - oo) / dd;
-      if (t1 > t2) [t1, t2] = [t2, t1];
-      tmin = Math.max(tmin, t1);
-      tmax = Math.min(tmax, t2);
+      const t1 = (-hh - oo) / dd;
+      const t2 = (hh - oo) / dd;
+      tmin = Math.max(tmin, Math.min(t1, t2));
+      tmax = Math.min(tmax, Math.max(t1, t2));
       if (tmax < tmin) return Infinity;
     }
     return tmin;
@@ -2295,11 +2676,17 @@ export class StackerSystem extends createSystem({}) {
     this.q1.copy(r.quaternion).invert();
     const o = r.worldToLocal(this.v1.copy(far ? h.rayOrigin : h.point));
     const d = this.v2.copy(h.rayDir).applyQuaternion(this.q1);
-    const c = this.v3;
     const lo2 = this.v4;
     const ext = this.v5;
     const dl = this.v6;
-    for (const rec of this.placedRecs) {
+    // Skip the per-block pass when the hand is nowhere near the build.
+    let skip = !this.buildBox();
+    if (!skip) {
+      ext.copy(this.buildMax).sub(this.buildMin).multiplyScalar(0.5);
+      lo2.copy(this.buildMin).add(ext).sub(o).negate();
+      skip = far ? this.rayBox(lo2, d, ext.x, ext.y, ext.z) === Infinity : this.boxDist(lo2, ext.x, ext.y, ext.z) * s > limit;
+    }
+    if (!skip) for (const rec of this.placedRecs) {
       this.halfExtents(rec.part, ext);
       lo2.copy(o).applyMatrix4(rec.mi!);
       let sc: number;
@@ -2307,12 +2694,33 @@ export class StackerSystem extends createSystem({}) {
         dl.copy(d).transformDirection(rec.mi!);
         // transformDirection normalizes; rescale t back into platform units
         sc = this.rayBox(lo2, dl, ext.x, ext.y, ext.z);
-      } else sc = this.boxDist(lo2, ext.x, ext.y, ext.z);
+      } else {
+        // Block boxes overlap (studs included): when the point is inside several,
+        // the one whose center is nearest wins.
+        sc = this.boxDist(lo2, ext.x, ext.y, ext.z) + lo2.length() * 0.01;
+      }
       sc *= s;
       if (sc < limit && (!best || sc < best.score)) best = { kind: 'placed', placed: rec, score: sc };
     }
     // A bare panel hit (no item) is only there to block rays; don't target it.
     return best && best.kind === 'ui' && !best.ui ? null : best;
+  }
+
+  /** Bounds of everything placed (platform-local), or false when nothing is. Cached per edit. */
+  private buildBox(): boolean {
+    if (!this.placedRecs.length) return false;
+    if (this.buildBoxGen !== this.editGen) {
+      this.buildBoxGen = this.editGen;
+      this.buildMin.set(Infinity, Infinity, Infinity);
+      this.buildMax.set(-Infinity, -Infinity, -Infinity);
+      for (const rec of this.placedRecs) {
+        const rad = this.halfExtents(rec.part, this.v3).length();
+        this.v4.setFromMatrixPosition(rec.m);
+        this.buildMin.min(this.v5.copy(this.v4).subScalar(rad));
+        this.buildMax.max(this.v5.copy(this.v4).addScalar(rad));
+      }
+    }
+    return true;
   }
 
   private isCarried(l: Loose): boolean {
@@ -2323,7 +2731,7 @@ export class StackerSystem extends createSystem({}) {
     const prev = h.target?.ui;
     h.target = null;
     if (h.mode !== 'none') {
-      h.target = this.collectTargets(h, false);
+      h.target = h.mode === 'mouse' ? null : this.collectTargets(h, false);
       h.targetFar = !h.target;
       if (!h.target) h.target = this.collectTargets(h, true);
     }
@@ -2332,13 +2740,19 @@ export class StackerSystem extends createSystem({}) {
     if (next) this.setUiHover(next, true);
   }
 
+  /**
+   * Finger poke on panels. A press needs the fingertip to arrive from in front
+   * (armed above 6 mm) and reach the surface (4 mm, the buttons sit at 1 mm), so
+   * sliding in from the side or from behind a panel doesn't fire anything.
+   */
   private poke(h: HandState): void {
     if (!h.hasTip) return;
     for (const p of this.panels) {
       const lo = p.entity.object3D!.worldToLocal(this.v1.copy(h.indexTip));
-      if (Math.abs(lo.x) > p.w / 2 || Math.abs(lo.y) > p.h / 2) continue;
+      if (Math.abs(lo.x) > p.w / 2 || Math.abs(lo.y) > p.h / 2 || lo.z > 0.05 || lo.z < -0.03) continue;
+      if (lo.z > 0.006) h.pokeArmed = true;
       const slider = p.items.find((u) => u.kind === 'slider' && Math.abs(lo.x - u.x) <= u.w / 2 && Math.abs(lo.y - u.y) <= u.h / 2);
-      if (slider && lo.z < 0.008 && lo.z > -0.02) {
+      if (slider && lo.z < 0.004 && lo.z > -0.02 && (h.pokeArmed || h.pokeLatched)) {
         this.slideTo(slider, lo.x);
         h.pokeLatched = true;
         return;
@@ -2347,17 +2761,20 @@ export class StackerSystem extends createSystem({}) {
         if (lo.z > 0.02) h.pokeLatched = false;
         return;
       }
-      if (lo.z > 0.008 || lo.z < -0.02) continue;
+      if (!h.pokeArmed || lo.z > 0.004 || lo.z < -0.02) return;
       for (const item of p.items) {
         if (item.kind === 'label') continue;
         if (item.kind === 'cell' && (this.cellPart(item.value) >= 0 || !this.cellActive(item.value))) continue;
         if (Math.abs(lo.x - item.x) <= item.w / 2 && Math.abs(lo.y - item.y) <= item.h / 2) {
           h.pokeLatched = true;
-          this.pressUi(item);
+          h.pokeArmed = false;
+          this.pressUi(item, h);
           return;
         }
       }
+      return;
     }
+    h.pokeArmed = false;
   }
 
   private dragSlider(h: HandState): void {
@@ -2383,11 +2800,12 @@ export class StackerSystem extends createSystem({}) {
         this.dragSlider(h);
         return;
       }
-      this.pressUi(t.ui!);
+      this.pressUi(t.ui!, h);
       return;
     }
     const tapLike = btn === 'trigger' || btn === 'pinch';
-    if (this.tool === 'select' && tapLike && t.kind === 'placed') {
+    const selecting = this.tool === 'select' || (h.mode === 'mouse' && this.desktop.shift);
+    if (selecting && tapLike && t.kind === 'placed') {
       if (this.selection.has(t.placed!)) this.selection.delete(t.placed!);
       else this.selection.add(t.placed!);
       this.tick(0.2);
@@ -2426,7 +2844,7 @@ export class StackerSystem extends createSystem({}) {
         h.frame = t.frame!;
         h.holdButton = btn;
         const obj = this.frameObject(h.frame);
-        h.anchorDist = h.mode === 'controller' && h.targetFar ? t.score : -1;
+        h.anchorDist = h.mode !== 'hand' && h.targetFar ? t.score : -1;
         this.q1.copy(h.quat).invert();
         h.offsetQuat.copy(this.q1).multiply(obj.quaternion);
         h.offsetPos.copy(obj.position).sub(this.grabPoint(h)).applyQuaternion(this.q1);
@@ -2439,7 +2857,7 @@ export class StackerSystem extends createSystem({}) {
         h.frame = t.frame!;
         h.resizing = panel;
         h.holdButton = btn;
-        h.anchorDist = h.mode === 'controller' && h.targetFar ? t.score : -1;
+        h.anchorDist = h.mode !== 'hand' && h.targetFar ? t.score : -1;
         // The top-left corner stays put while the bottom-right follows the hand.
         panel.entity.object3D!.localToWorld(h.resizeAnchor.set(-panel.w / 2, panel.h / 2, 0));
         this.tick(0.3);
@@ -2449,7 +2867,7 @@ export class StackerSystem extends createSystem({}) {
         h.frame = 'platform';
         h.holdButton = btn;
         h.corner = t.corner!;
-        h.anchorDist = h.mode === 'controller' && h.targetFar ? t.score : -1;
+        h.anchorDist = h.mode !== 'hand' && h.targetFar ? t.score : -1;
         this.tick(0.3);
         return;
     }
@@ -2499,6 +2917,8 @@ export class StackerSystem extends createSystem({}) {
       t.loose!.color = this.color;
       t.loose!.finish = this.finish;
       t.loose!.mesh.material = this.matFor(this.finish, this.color);
+      t.loose!.mesh.castShadow = !this.isSeeThrough(this.finish, this.color);
+      this.shadowDirty = true;
       this.tick(0.15);
     }
   }
@@ -2525,6 +2945,8 @@ export class StackerSystem extends createSystem({}) {
 
   private startHold(h: HandState, btn: Btn, pieces: Piece[], far: boolean): void {
     h.pieces = pieces;
+    h.snapGen = -1;
+    h.lost = 0;
     h.holdButton = btn;
     h.target = null;
     this.tick(0.3);
@@ -2541,6 +2963,11 @@ export class StackerSystem extends createSystem({}) {
     this.q1.copy(h.quat).invert();
     h.offsetQuat.copy(this.q1).multiply(anchor.quaternion);
     h.rotTarget.copy(h.offsetQuat);
+    if (h.mode === 'mouse') {
+      // Desktop holds keep their world rotation (see turnHeld).
+      h.offsetQuat.copy(anchor.quaternion);
+      h.rotTarget.copy(anchor.quaternion);
+    }
     if (far) h.offsetPos.set(0, 0, 0);
     else h.offsetPos.copy(anchor.position).sub(h.point).applyQuaternion(this.q1);
   }
@@ -2563,11 +2990,23 @@ export class StackerSystem extends createSystem({}) {
       if (h.offsetPos.lengthSq() > 0) this.v1.copy(h.offsetPos).applyQuaternion(h.quat).add(h.point);
       this.q1.copy(h.quat).multiply(h.offsetQuat);
       rate = FOLLOW_CTRL;
+    } else if (h.mode === 'mouse') {
+      const d = this.desktop;
+      if (d.actions.has('spinL')) this.turnHeld(h, 'spin', 1);
+      if (d.actions.has('spinR')) this.turnHeld(h, 'spin', -1);
+      if (d.actions.has('tipU')) this.turnHeld(h, 'tip', -1);
+      if (d.actions.has('tipD')) this.turnHeld(h, 'tip', 1);
+      h.offsetQuat.slerp(h.rotTarget, 1 - Math.exp(-delta * 18));
+      this.q1.copy(h.offsetQuat);
+      this.mouseDrop(h, pieces[0].block.part, this.v1);
+      rate = FOLLOW_CTRL;
     } else {
       this.v1.copy(h.offsetPos).applyQuaternion(h.quat).add(h.point);
       this.q1.copy(h.quat).multiply(h.offsetQuat);
     }
-    const a = 1 - Math.exp(-delta * rate);
+    // Letting go of a pinch moves the fingers: the block stays put while they open.
+    const holdGap = h.holdButton === 'mid' ? h.midGap : h.pinchGap;
+    const a = h.mode === 'hand' && holdGap > PINCH_OPENING ? 0 : 1 - Math.exp(-delta * rate);
     anchor.position.lerp(this.v1, a);
     anchor.quaternion.slerp(this.q1, a);
     for (let k = 1; k < pieces.length; k++) {
@@ -2575,6 +3014,8 @@ export class StackerSystem extends createSystem({}) {
       m.position.copy(pieces[k].offPos).applyQuaternion(anchor.quaternion).add(anchor.position);
       m.quaternion.copy(anchor.quaternion).multiply(pieces[k].offQuat);
     }
+
+    h.overTrash = this.overLibrary(anchor.position);
 
     // Kit guidance: light up where this piece goes and draw a line to it.
     if (this.kit && pieces.length === 1) {
@@ -2594,21 +3035,38 @@ export class StackerSystem extends createSystem({}) {
       }
     }
 
-    if (this.computeSnap(pieces)) {
-      this.snapOut.forEach((o, k) => {
-        const g = this.ghostFor(h, k);
-        g.geometry = this.lib.geometries[pieces[k].block.part];
-        this.placedWorldPose(o, g.position, g.quaternion);
-        g.scale.setScalar(this.scale);
-        g.visible = true;
-      });
+    // Snapping is only recomputed when the pieces (or the build) actually changed.
+    const stale = h.snapGen !== this.editGen || h.snapPlatform !== this.platformGen;
+    if (stale || anchor.position.distanceToSquared(h.snapAt) > 2.5e-7 || anchor.quaternion.angleTo(h.snapQ) > 0.01) {
+      h.snapOk = this.computeSnap(pieces);
+      h.snapGen = this.editGen;
+      h.snapPlatform = this.platformGen;
+      h.snapAt.copy(anchor.position);
+      h.snapQ.copy(anchor.quaternion);
+      h.snapCount = h.snapOk ? this.snapOut.length : 0;
+      for (let k = 0; k < h.snapCount; k++) {
+        const shown = (h.snapShown[k] ??= { m: new Matrix4() });
+        shown.m.copy(this.snapOut[k].m);
+        shown.target = this.snapOut[k].target;
+      }
+    }
+    for (let k = 0; k < h.snapCount; k++) {
+      const g = this.ghostFor(h, k);
+      g.geometry = this.lib.geometries[pieces[k].block.part];
+      this.placedWorldPose(h.snapShown[k], g.position, g.quaternion);
+      g.scale.setScalar(this.scale);
+      g.visible = true;
     }
   }
 
   /** Quarter-turn the held block: spin about the platform's up axis, or tip about the controller's side axis. */
   private turnHeld(h: HandState, how: 'spin' | 'tip', dir: number): void {
     const angle = (dir * Math.PI) / 2;
-    if (how === 'spin') {
+    if (h.mode === 'mouse') {
+      // Desktop holds keep a world rotation: spin about the platform's up, tip about the camera's side.
+      const axis = how === 'spin' ? this.v2.set(0, 1, 0).applyQuaternion(this.root.object3D!.quaternion) : this.v2.set(1, 0, 0).applyQuaternion(h.quat);
+      h.rotTarget.premultiply(this.q2.setFromAxisAngle(axis, angle));
+    } else if (how === 'spin') {
       const upAxis = this.v2.set(0, 1, 0).applyQuaternion(this.root.object3D!.quaternion);
       const w = new Quaternion().setFromAxisAngle(upAxis, angle);
       // world-space turn, expressed in the controller's frame
@@ -2634,14 +3092,17 @@ export class StackerSystem extends createSystem({}) {
     h.pieces = null;
     h.holdButton = null;
     const anchor = pieces[0].block.mesh;
+    h.overTrash = false;
     // Dropped on the library → put back.
-    const lo = this.library.entity.object3D!.worldToLocal(this.v1.copy(anchor.position));
-    if (Math.abs(lo.x) < this.library.w / 2 + 0.02 && Math.abs(lo.y) < this.library.h / 2 + 0.02 && lo.z > -0.03 && lo.z < 0.06) {
+    if (this.overLibrary(anchor.position)) {
       for (const p of pieces) this.dropLoose(p.block, true);
       return;
     }
-    if (this.computeSnap(pieces)) {
-      const recs = this.snapOut.map((o, k) => this.makeRec(pieces[k].block.part, pieces[k].block.color, o.m, o.target, pieces[k].block.finish));
+    // Commit the landing that was on show; recompute only if the build changed since.
+    const shown = h.snapGen === this.editGen && h.snapPlatform === this.platformGen;
+    if (shown ? h.snapOk : this.computeSnap(pieces)) {
+      const src = shown ? h.snapShown.slice(0, h.snapCount) : this.snapOut;
+      const recs = src.map((o, k) => this.makeRec(pieces[k].block.part, pieces[k].block.color, o.m.clone(), o.target, pieces[k].block.finish));
       if (h.fromSelection) this.selection.clear();
       recs.forEach((rec, k) => {
         const m = pieces[k].block.mesh;
@@ -2653,7 +3114,14 @@ export class StackerSystem extends createSystem({}) {
     this.redrawUi((u) => u.id === 'deselect');
   }
 
+  /** Is this point on the library panel, where letting go of a block removes it? */
+  private overLibrary(pos: Vector3): boolean {
+    const lo = this.library.entity.object3D!.worldToLocal(this.v1.copy(pos));
+    return Math.abs(lo.x) < this.library.w / 2 + 0.02 && Math.abs(lo.y) < this.library.h / 2 + 0.02 && lo.z > -0.03 && lo.z < 0.06;
+  }
+
   private dropPieces(h: HandState): void {
+    h.overTrash = false;
     for (const p of h.pieces!) this.dropLoose(p.block, true);
     h.pieces = null;
     h.holdButton = null;
@@ -2723,7 +3191,8 @@ export class StackerSystem extends createSystem({}) {
 
   private dragCorner(h: HandState): void {
     const P = dims.pitch;
-    const local = this.root.object3D!.worldToLocal(this.v1.copy(this.grabPoint(h)));
+    const local = h.mode === 'mouse' ? this.platePoint(h, this.v1) : this.root.object3D!.worldToLocal(this.v1.copy(this.grabPoint(h)));
+    if (!local) return;
     const b = { ...this.bounds };
     const ext = this.placedExtent();
     const gx = Math.round(local.x / P);
@@ -2744,6 +3213,17 @@ export class StackerSystem extends createSystem({}) {
 
   private drawPointer(h: HandState): void {
     const t = h.target;
+    // Pinch ring: sits between thumb and index, shrinks as they close, fills blue on pinch.
+    const ring = h.pinchRing;
+    ring.visible = h.mode === 'hand' && !h.pieces && !h.frame && !h.slider && h.pinchGap < 0.07;
+    if (ring.visible) {
+      ring.position.copy(h.point);
+      this.camera.getWorldQuaternion(ring.quaternion);
+      ring.scale.setScalar(Math.min(0.012, Math.max(0.0035, h.pinchGap * 0.28)));
+      const m = ring.material as MeshBasicMaterial;
+      m.color.setHex(h.pinching ? 0x5b8def : t ? 0xffffff : 0x9aa4b8);
+      m.opacity = Math.min(1, (0.07 - h.pinchGap) / 0.03);
+    }
     h.outline.visible = false;
     if (t && !h.pieces && !h.frame && !h.slider && t.kind !== 'ui') {
       if (t.kind === 'placed') {
@@ -2761,9 +3241,13 @@ export class StackerSystem extends createSystem({}) {
       (h.outline.material as MeshBasicMaterial).color.set(this.tool === 'paint' ? this.lib.colors[this.color].hex : 0xffffff);
       h.outline.visible = true;
     }
-    const showRay = h.mode !== 'none' && !h.pieces && !h.frame && (h.targetFar || !t || !!h.slider);
+    const showRay = h.mode !== 'none' && h.mode !== 'mouse' && !h.pieces && !h.frame && (h.targetFar || !t || !!h.slider);
     h.ray.visible = showRay;
     h.cursor.visible = showRay && !!t;
+    if (h.mode === 'mouse') {
+      const busy = h.pieces || h.frame || h.slider;
+      this.desktop.setCursor(busy ? 'grabbing' : !t ? 'default' : t.kind === 'ui' ? 'pointer' : 'grab');
+    }
     if (!showRay) return;
     const len = t ? t.score : 0.35;
     h.ray.position.copy(h.rayOrigin);
@@ -3211,6 +3695,52 @@ export class StackerSystem extends createSystem({}) {
 
   // ================================================================ saves
 
+  // ================================================================ undo
+
+  private snapshot(): string {
+    return JSON.stringify({ bounds: this.bounds, blocks: (this.serialize() as { blocks: unknown[] }).blocks });
+  }
+
+  private busy(): boolean {
+    if (this.snaps.length) return true;
+    for (const h of this.hands) if (h.pieces || h.painting || h.corner >= 0 || h.slider) return true;
+    return false;
+  }
+
+  /** Once an edit settles (nothing held or animating), remember the state from before it. */
+  private settleUndo(): void {
+    if (!this.edited || this.kit || this.busy()) return;
+    this.edited = false;
+    const now = this.snapshot();
+    if (now === this.stable) return;
+    this.undoStack.push(this.stable);
+    if (this.undoStack.length > 50) this.undoStack.shift();
+    this.redoStack.length = 0;
+    this.stable = now;
+    this.redrawUi((u) => u.id === 'undo' || u.id === 'redo');
+  }
+
+  private undo(): void {
+    if (this.kit || this.busy() || !this.undoStack.length) return;
+    this.redoStack.push(this.stable);
+    this.restore(this.undoStack.pop()!);
+  }
+
+  private redo(): void {
+    if (this.kit || this.busy() || !this.redoStack.length) return;
+    this.undoStack.push(this.stable);
+    this.restore(this.redoStack.pop()!);
+  }
+
+  private restore(state: string): void {
+    this.stable = state;
+    this.deserialize({ v: 4, ...JSON.parse(state) });
+    this.edited = false;
+    this.aimKeyLight();
+    this.tick(0.2);
+    this.redrawUi((u) => u.id === 'undo' || u.id === 'redo' || u.id === 'deselect');
+  }
+
   private serialize(): object {
     return {
       v: 4,
@@ -3352,6 +3882,15 @@ export class StackerSystem extends createSystem({}) {
     osc.connect(gain).connect(ctx.destination);
     osc.start(t);
     osc.stop(t + len + 0.01);
+  }
+
+  /** Soft tick for panel presses by hand or mouse, which have no haptics. */
+  private uiTick(): void {
+    try {
+      this.beep(2200, 0, 0.025, 'sine', 0.05);
+    } catch {
+      // audio is best-effort
+    }
   }
 
   private click(): void {

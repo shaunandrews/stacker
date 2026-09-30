@@ -14,60 +14,66 @@ Target: **120 Hz on Quest 3** where possible (72/90 fallback), with builds of 1,
 | **Trimmed geometry** — underside tubes removed at conversion | `build-parts.mjs` |
 | **Plate studs** are one `InstancedMesh` (up to 64 × 64) | `updatePlate` |
 | **Foveated rendering** on session start (slider, default 1 = max) | `onSessionStart`, `applyVisuals` |
+| **Static shadows** — the shadow map redraws only on change | `update`, `fitShadow` |
 | **120 Hz requested** when supported; the Hz button cycles rates | `onSessionStart` |
 | Unused IWSDK features off: physics, grabbing, scene understanding, spatial UI, depth sensing, plane/mesh detection, anchors | `iwsdk.config.json` |
 | No per-frame allocation in hot paths (shared temp vectors) | throughout |
 | Stats strip: fps (green at ≥ 95% of target), worst frame, draw calls, triangles, piece count | settings panel |
+| **UI**: a panel item's canvas is redrawn and re-uploaded only when what it shows changes (`sig`); the 32 color swatches are two instanced meshes; layout rebuilds dispose what they made (`Panel.owned`) — `entity.destroy()` alone leaks GPU buffers | `drawUi`, `layoutLibrary`, `clearPanel` |
+| **Targeting** skips the per-block pass when the hand's point or ray misses the build's bounds; `rayBox` allocates nothing | `collectTargets`, `buildBox` |
+| **Snapping** is recomputed only when the held pieces move (0.5 mm / 0.6°) or the build changes; release commits the cached result | `holdPieces` |
 
-**Stress** (settings) tiles the plate with 2×2 bricks six layers deep as a repeatable perf test.
+**Stress** (settings → Advanced) tiles the plate with 2×2 bricks six layers deep as a repeatable perf test.
 
 Depth occlusion (real hands hiding virtual blocks) was removed — it cost GPU time on every fragment and wasn't wanted.
 
 ## Materials
 
-- One material per palette color for loose/held/catalog blocks; one white opaque + one white transparent material shared by all instanced batches (tinted by instance color)
-- **Standard** (`MeshStandardMaterial`) by default; **Physical** (`MeshPhysicalMaterial`, clearcoat) via the Material toggle, or automatically when Clearcoat is raised above 0. Switching swaps every block material
-- **Fixed colors:** `withFixedColors()` patches the shader to mix in a per-vertex `fixedColor` attribute — alpha 1 (or no attribute) means use the main color, alpha 0 means use the baked color. This is how printed faces and yellow minifig hands survive recoloring
-- Transparent parts: roughness capped at 0.15, opacity from See-through, no depth write, no shadow casting
-- Panels use unlit materials so the UI looks the same under any lighting setting
+Three finishes (`FINISHES` in `look.ts`), each one material per palette color for loose/held/catalog blocks, and one white material per finish shared by all instanced batches (tinted by instance color). All are `MeshStandardMaterial`, patched in `patchBlockShader`:
+
+| Finish | Setup | Shader patch |
+|---|---|---|
+| **Plastic** | roughness 0.2, F0 0.04 (ABS is a single dielectric layer — no clearcoat) | — |
+| **Wood** | roughness 0.62 | Procedural grain in the part's own space (mm): rings around an off-block trunk along X, warped by value noise, plus faint fibres. Palette color stains it (55%). Placed blocks get their own grain from their platform position |
+| **Clear** | roughness 0.04, opacity 0.45, no depth write, no shadows | Premultiplied alpha so reflections stay at full strength while the body fades; edges turn more opaque at grazing angles (Fresnel) |
+
+- See-through palette colors always render as Clear. Older saves' glass/frosted/diamond map to Clear, everything else to Plastic
+- **Fixed colors:** a per-vertex `fixedColor` attribute — alpha 1 (or no attribute) means use the main color, alpha 0 means use the baked color. This is how printed faces and yellow minifig hands survive recoloring
+- Specular anti-aliasing is built into three (derivative-based `geometryRoughness`)
+- Panels use unlit materials so the UI looks the same under any lighting
+
+## Geometry
+
+Parts are bevelled in the pipeline (0.2 mm chamfer on hard convex edges, normals blended across the strip so it shades round) with 0.1 mm seams between neighbours — see [04](04-parts-pipeline.md). Baseplate studs use a matching 80-triangle stud with a rounded rim (`studGeometry`).
 
 ## Lighting
 
-- **Environment:** IWSDK `IBLTexture` with the built-in "room" environment (scene JSON) — gives blocks something to reflect. Background stays empty for passthrough
-- **Key light:** one `DirectionalLight` with a 1024² PCF shadow map, orbiting the plate center by azimuth/height, following the platform
+- **Environment:** a PMREM of the preset's environment scene (`makeEnvScene`). Its strength is `scene.environmentIntensity` — three ignores `material.envMapIntensity` when the map comes from `scene.environment`, so that's the only dial that works. Keep it well below the key light (0.45–0.7): at 0.9+ it floods every face equally and the build reads flat, with invisible shadows
+- **Key light:** one `DirectionalLight`, orbiting the plate center by azimuth/height and following the platform
+- **Shadows:** PCF. The shadow camera is fitted to the plate each time the light or plate changes (`fitShadow`), and the map is sized so the chosen softness is ≤ 4 texels of blur (512–2048²). `shadowMap.autoUpdate` is off: the map redraws only after a change, or while something is held, snapping or being dropped
 - **Fill:** `HemisphereLight`
-- **Tone mapping:** Neutral by default (keeps saturated plastic from blowing out); ACES, AgX or None via the Tone button
+- **Tone mapping:** per preset (Neutral, ACES, AgX); applied inline in XR, no extra pass
 
-## Look & render settings
+## Look presets & Advanced
 
-All live, persisted per device in `localStorage['stacker.visual']`. **Reset look** restores defaults.
+Six presets (`STYLES` in `look.ts`) set environment, backdrop, lights, shadows, tone and plate together: **Daylight** (default), **Soft**, **Golden Hour**, **Studio**, **Showroom**, **Moonlight**. The settings panel shows the presets and the Size slider; **Advanced** expands it with environment, tone, reset and the sliders below. Everything persists per device in `localStorage['stacker.look']` (versioned; older saves reset to Daylight).
 
-| Slider | Range | Default | Drives |
-|---|---|---|---|
-| Size | 0.75–3× | 1× | Platform + loose block scale |
-| Exposure | 0.3–2.5 | 1.05 | `renderer.toneMappingExposure` |
-| Key light | 0–6 | 2.4 | Directional light intensity |
-| Key angle | −180–180° | −40° | Light azimuth around the plate |
-| Key height | 5–90° | 55° | Light elevation |
-| Key warmth | cool ↔ warm | warm 30% | Light color |
-| Fill light | 0–2 | 0.35 | Hemisphere intensity |
-| Reflections | 0–3 | 1 | `envMapIntensity` (blocks and plate) |
-| Reflection turn | 0–360° | 0° | `scene.environmentRotation` |
-| Roughness | 0–1 | 0.3 | Block roughness |
-| Metalness | 0–1 | 0 | Block metalness |
-| Clearcoat* | 0–1 | 0 | Physical clearcoat (switches to Physical) |
-| Coat roughness* | 0–1 | 0.1 | Physical clearcoat roughness |
-| See-through | 0.1–1 | 0.5 | Transparent part opacity |
-| Plate brightness | 0.2–1.6 | 1 | Baseplate color multiplier |
-| Plate roughness | 0–1 | 0.5 | Baseplate roughness |
-| Shadow strength | 0–1 | 0.8 | `shadow.intensity`; 0 turns shadows off entirely |
-| Shadow softness | 0–6 | 1 | `shadow.radius` |
-| Foveation | 0–1 | 1 | `renderer.xr.setFoveation` |
-
-Toggles: **Tone** (Neutral / ACES / AgX / None), **Material** (Standard / Physical), **Guide** (Ghosts / Manual / Both).
+| Slider | Range | Drives |
+|---|---|---|
+| Size | 0.75–3× | Platform + loose block scale |
+| Room ↔ virtual | 0–1 | Backdrop dome opacity (0 = passthrough) |
+| Reflections | 0–3 | `scene.environmentIntensity` |
+| Reflection turn | 0–360° | `scene.environmentRotation` |
+| Exposure | 0.3–2.5 | `renderer.toneMappingExposure` |
+| Key light / angle / height / warmth | | Directional light |
+| Fill light | 0–2 | Hemisphere intensity |
+| Shadows | 0–1 | `shadow.intensity`; 0 turns shadows off |
+| Shadow softness | 0–6 | Penumbra width (≈1.2 mm per step) |
+| Plate brightness | 0.2–1.6 | Baseplate color multiplier |
+| Foveation | 0–1 | `renderer.xr.setFoveation` |
 
 ## Perf budget notes
 
-- Triangles: ~430 per part on average; LDraw studs are 16-sided. If big builds get heavy, the next lever is a lower-poly stud primitive at conversion time.
-- Shadows roughly double geometry cost (shadow pass). Shadow strength 0 is the quickest way to test headroom.
+- Triangles: ~760 per part on average after bevels (was ~420); LDraw studs are 16-sided and their rims are most of the bevel cost. Stress (1,536 2×2 bricks) is ~700k triangles per frame with multiview. If big builds get heavy, the next lever is a lower-poly stud primitive at conversion time.
+- The shadow pass only runs after a change or while something moves, so idle frames draw geometry once.
 - MSAA is on (IWSDK default); foveation is the main fill-rate lever.

@@ -11,7 +11,7 @@ def ray_press(target, b=0):
 def reset_ctrl(): cli('xr','set-transform', inp={'device':R,'orientation':{'x':0,'y':0,'z':0,'w':1}})
 cli('browser','reload'); time.sleep(6); cli('xr','enter'); time.sleep(3)
 cli('xr','set-transform', inp={'device':'headset','orientation':{'pitch':-30,'yaw':0,'roll':0}})
-js('s.exitKit(); s.clearPlaced(); return 1')
+js('s.exitKit(); s.clearPlaced(); s.instructions = "ghosts"; s.applyInstructions(); return 1')  # guide mode persists per device
 s = probe()
 # 1. library resize: grab the corner and drag down-right
 c = s['library']['resize']; n0 = s['cellsPerPage']
@@ -19,14 +19,18 @@ reset_ctrl(); tip_at(R, c); btn(R, 1, 1)
 cli('xr','animate-to', inp={'device':R,'position':{'x':c[0]+0.12,'y':c[1]-0.1,'z':c[2]+0.035+0.08},'duration':0.6}); time.sleep(0.9)
 btn(R, 1, 0)
 s = probe(); ok('library resize grows the grid', s['cellsPerPage'] > n0, (n0, s['cellsPerPage'], s['library']['w'], s['library']['h']))
-# 2. settings slider (key light) via ray drag
+# 2. look presets, Advanced, then a settings slider (key light) via ray drag
+ray_press(s['ui']['style:3'])
+s1 = probe(); ok('Studio preset fades the room', s1['visual']['backdrop'] > 0.5, s1['visual']['backdrop'])
+ok('sliders hidden until Advanced', 'slider:key' not in s1['ui'])
+ray_press(s1['ui']['advanced'])
+s = probe(); ok('Advanced shows the sliders', 'slider:key' in s['ui'])
 k = s['ui']['slider:key']
 aim_from([k[0], k[1], k[2]]); btn(R, 0, 1); look(R, [k[0] + 0.08, k[1], k[2]]); time.sleep(0.3); btn(R, 0, 0)
 s2 = probe(); ok('key light slider', abs(s2['visual']['key'] - s['visual']['key']) > 0.3, (s['visual']['key'], s2['visual']['key']))
-ray_press(s['ui']['tone']); ray_press(s['ui']['model'])
-s3 = probe(); ok('tone + material toggles', s3['tone'] == 1 and s3['physical'], (s3['tone'], s3['physical']))
-cc = s3['ui']['slider:clearcoat']; aim_from(cc); btn(R, 0, 1); look(R, [cc[0] + 0.06, cc[1], cc[2]]); time.sleep(0.3); btn(R, 0, 0)
-ok('clearcoat slider', probe()['visual']['clearcoat'] > 0.2, probe()['visual']['clearcoat'])
+ray_press(s2['ui']['tone'])
+s3 = probe(); ok('tone toggle', s3['tone'] != s2['tone'], (s2['tone'], s3['tone']))
+ray_press(s3['ui']['advanced'])
 # 3. kit guidance: Go-Kart minifig step
 js('await s.startKit("6400-1", "Go-Kart"); for (let k=0;k<6;k++) s.skipStep(); return 1')
 s = probe(); t = s['kitTargets'][3]; kk = [x['part'] for x in s['shelf']].index(t['part'])
