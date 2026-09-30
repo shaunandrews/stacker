@@ -11,6 +11,7 @@ import {
   Color,
   createSystem,
   CylinderGeometry,
+  Data3DTexture,
   DataTexture,
   DirectionalLight,
   EdgesGeometry,
@@ -21,6 +22,7 @@ import {
   InputComponent,
   InstancedMesh,
   Line,
+  LinearFilter,
   LineBasicMaterial,
   LineSegments,
   Matrix4,
@@ -53,7 +55,7 @@ import { DesktopControls } from './desktop.js';
 import { ArtRenderer, KitBox, TEAR_PULL } from './kit-boxes.js';
 import type { ArtPiece, KitInfo } from './kit-boxes.js';
 import { HDRLoader } from 'three/examples/jsm/loaders/HDRLoader.js';
-import { envId, ENVS, finishIndex, FINISHES, makeBackdrop, makeEnvScene, makeFinish, paintBackdrop, patchBlockShader, STYLES } from './look.js';
+import { CONTACT, envId, ENVS, finishIndex, FINISHES, makeBackdrop, makeEnvScene, makeFinish, OCCLUSION, paintBackdrop, patchBlockShader, STYLES } from './look.js';
 import { progress } from './splash.js';
 
 // ---- Platform (world meters ÷ the Size scale = platform-local units) ----
@@ -141,6 +143,7 @@ const SLIDERS: SliderDef[] = [
   { id: 'shadow', label: 'Shadows', min: 0, max: 1, step: 0.05, fmt: pct },
   { id: 'shadowSoft', label: 'Shadow softness', min: 0, max: 6, step: 0.25, fmt: (v) => v.toFixed(2) },
   { id: 'plate', label: 'Plate brightness', min: 0.2, max: 1.6, step: 0.05, fmt: pct },
+  { id: 'occlusion', label: 'Occlusion', min: 0, max: 2, step: 0.05, fmt: pct },
   { id: 'foveation', label: 'Foveation', min: 0, max: 1, step: 0.05, fmt: pct },
   // Render resolution vs the headset's default; WebXR only takes it when a session starts.
   { id: 'resolution', label: 'Resolution (next XR entry)', min: 0.8, max: 1.6, step: 0.05, fmt: (v) => `${v.toFixed(2)}×` },
@@ -162,6 +165,7 @@ function styleValues(k: number): Record<string, number> {
     shadow: st.shadow,
     shadowSoft: st.softness,
     plate: 1,
+    occlusion: 1,
     foveation: 1,
     resolution: 1.3,
   };
@@ -516,6 +520,8 @@ export class StackerSystem extends createSystem({}) {
   private recenterDelay = -1;
   private snapOut: Placement[] = [];
   private swingM = new Matrix4();
+  private contactGen = -1; // editGen/platformGen the occupancy grid was built for
+  private contactPlate = -1;
 
   // Stats
   private frameCount = 0;
@@ -560,7 +566,7 @@ export class StackerSystem extends createSystem({}) {
     this.ghostLitMat = new LineBasicMaterial({ color: 0xfde047, transparent: true, opacity: 1, depthWrite: false, depthTest: false });
     this.stepLineMat = new LineBasicMaterial({ color: 0xfde047 });
 
-    if (import.meta.env.DEV) (window as unknown as { stacker: unknown }).stacker = this;
+    if (import.meta.env.DEV) Object.assign(window, { stacker: this, stackerContact: CONTACT });
 
     for (const hand of HANDS) {
       this.input.xr.multiPointers[hand].toggleSubPointer('ray', false);
@@ -687,6 +693,7 @@ export class StackerSystem extends createSystem({}) {
     for (const h of this.hands) hot ||= h.frame === 'platform' || h.target?.kind === 'edge' || h.target?.kind === 'corner';
     this.handleMat.opacity = this.cornerMat.opacity = hot ? 1 : HANDLE_IDLE;
     this.tickSnaps(delta);
+    this.updateContact();
     this.tickBoxes(delta);
     this.tickPoofs(delta);
     this.tickLevel(delta);
@@ -905,6 +912,7 @@ export class StackerSystem extends createSystem({}) {
     if (this.plateMat) {
       this.plateMat.color.set(st.plate).multiplyScalar(v.plate);
     }
+    OCCLUSION.value = v.occlusion;
     if (this.renderer.xr.isPresenting) this.renderer.xr.setFoveation(v.foveation);
     else this.renderer.xr.setFramebufferScaleFactor(v.resolution);
     if (this.root) this.aimKeyLight();
@@ -935,7 +943,8 @@ export class StackerSystem extends createSystem({}) {
     const rootObj = new Object3D();
     rootObj.name = 'Platform';
     this.root = this.track(this.world.createTransformEntity(rootObj));
-    this.plateMat = patchBlockShader(new MeshStandardMaterial({ color: 0x237841, roughness: 0.5 })); // occlusion like the parts
+    // Occlusion like the parts, contact occlusion from the blocks on it.
+    this.plateMat = patchBlockShader(new MeshStandardMaterial({ color: 0x237841, roughness: 0.5 }), 'plastic', true);
     this.slab = new Mesh(new BoxGeometry(1, 1, 1), this.plateMat);
     this.slab.name = 'Baseplate';
     this.slab.receiveShadow = true;
@@ -1943,6 +1952,63 @@ export class StackerSystem extends createSystem({}) {
       if (this.obbOverlap(ca, A, body.h, cb, this.axesOf(rec.m, this.axB), b.h)) return true;
     }
     return false;
+  }
+
+  /**
+   * Contact occlusion: the platform's transform for the shader every frame, and — only when
+   * the build or plate changed — an occupancy grid over the plate (stud cells × plate
+   * heights) with every placed block's collision box rasterized into it.
+   */
+  private updateContact(): void {
+    const r = this.root.object3D!;
+    CONTACT.plateInv.value.copy(r.matrixWorld).invert();
+    if (this.contactGen === this.editGen && this.contactPlate === this.platformGen) return;
+    this.contactGen = this.editGen;
+    this.contactPlate = this.platformGen;
+    const P = dims.pitch;
+    const Y = dims.unit * 2;
+    const { x0, x1, z0, z1 } = this.bounds;
+    const W = x1 - x0;
+    const D = z1 - z0;
+    const top = this.buildBox() ? this.buildMax.y : 0;
+    const Hy = Math.max(2, Math.min(128, Math.ceil(top / Y) + 2));
+    const data = new Uint8Array(W * Hy * D);
+    const c = this.v1;
+    const lo = this.v2;
+    const hi = this.v3;
+    for (const rec of this.placedRecs) {
+      if (this.lib.parts[rec.part].overlap) continue;
+      const body = this.pconn[rec.part].body;
+      lo.set(Infinity, Infinity, Infinity);
+      hi.set(-Infinity, -Infinity, -Infinity);
+      for (let k = 0; k < 8; k++) {
+        c.set(k & 1 ? body.h.x : -body.h.x, k & 2 ? body.h.y : -body.h.y, k & 4 ? body.h.z : -body.h.z).add(body.c).applyMatrix4(rec.m);
+        lo.min(c);
+        hi.max(c);
+      }
+      const i0 = Math.max(0, Math.floor(lo.x / P - x0));
+      const i1 = Math.min(W - 1, Math.floor(hi.x / P - x0));
+      const j0 = Math.max(0, Math.floor(lo.y / Y));
+      const j1 = Math.min(Hy - 1, Math.floor(hi.y / Y));
+      const k0 = Math.max(0, Math.floor(lo.z / P - z0));
+      const k1 = Math.min(D - 1, Math.floor(hi.z / P - z0));
+      for (let i = i0; i <= i1; i++)
+        for (let j = j0; j <= j1; j++)
+          for (let k = k0; k <= k1; k++) {
+            c.set((x0 + i + 0.5) * P, (j + 0.5) * Y, (z0 + k + 0.5) * P).applyMatrix4(rec.mi!).sub(body.c);
+            if (Math.abs(c.x) <= body.h.x && Math.abs(c.y) <= body.h.y && Math.abs(c.z) <= body.h.z) data[i + j * W + k * W * Hy] = 255;
+          }
+    }
+    const old = CONTACT.grid.value;
+    const tex = new Data3DTexture(data, W, Hy, D);
+    tex.format = RedFormat;
+    tex.minFilter = tex.magFilter = LinearFilter;
+    tex.unpackAlignment = 1;
+    tex.needsUpdate = true;
+    CONTACT.grid.value = tex;
+    old.dispose();
+    CONTACT.min.value.set(x0 * P, 0, z0 * P);
+    CONTACT.size.value.set(W * P, Hy * Y, D * P);
   }
 
   /** Platform-local (unscaled) center of a placement. */

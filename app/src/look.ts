@@ -2,12 +2,15 @@ import {
   BackSide,
   BufferAttribute,
   Color,
+  Data3DTexture,
+  Matrix4,
   Mesh,
   MeshBasicMaterial,
   MeshStandardMaterial,
   PlaneGeometry,
   Scene,
   SphereGeometry,
+  Vector3,
 } from '@iwsdk/core';
 import type { Material } from '@iwsdk/core';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
@@ -54,7 +57,8 @@ export function makeFinish(finish: Finish, color: Color | null): Material {
       // ABS: dielectric (F0 ≈ 0.045, three's default 0.04), glossy but not mirror-like.
       m = new MeshStandardMaterial({ color: c, roughness: 0.2 });
   }
-  return patchBlockShader(m, finish.id);
+  // Uncolored materials are the instanced batches of placed blocks: they also get contact occlusion.
+  return patchBlockShader(m, finish.id, color === null);
 }
 
 // Wood: rings around an off-block trunk along the part's X axis, warped by value
@@ -96,22 +100,82 @@ float woodGrain(vec3 p) {
 /** Ambient occlusion strength for every block material (the Occlusion slider). */
 export const OCCLUSION = { value: 1 };
 
-export function patchBlockShader<T extends Material>(mat: T, finish = 'plastic'): T {
+/**
+ * Contact occlusion between placed blocks: an occupancy grid over the plate (one texel
+ * per stud cell × plate height, platform-local), rebuilt when the build changes.
+ */
+export const CONTACT = {
+  grid: { value: new Data3DTexture(new Uint8Array(1), 1, 1, 1) as Data3DTexture },
+  plateInv: { value: new Matrix4() }, // world → platform-local (unscaled meters)
+  min: { value: new Vector3() },
+  size: { value: new Vector3(1, 1, 1) },
+};
+
+const CONTACT_VERTEX = `
+#ifdef STACKER_CONTACT
+vec4 plateP = vec4(transformed, 1.0);
+vec3 plateN = objectNormal;
+#ifdef USE_INSTANCING
+plateP = instanceMatrix * plateP;
+plateN = mat3(instanceMatrix) * plateN;
+#endif
+mat4 toPlate = uPlateInv * modelMatrix;
+vPlatePos = (toPlate * plateP).xyz;
+vPlateNormal = mat3(toPlate) * plateN;
+#endif`;
+
+// Taps out along the normal, starting half a cell out so a block never darkens itself.
+const CONTACT_FRAGMENT = `
+#ifdef STACKER_CONTACT
+uniform highp sampler3D uGrid;
+uniform vec3 uGridMin;
+uniform vec3 uGridSize;
+varying vec3 vPlatePos;
+varying vec3 vPlateNormal;
+float contactOcclusion() {
+  vec3 n = normalize(vPlateNormal);
+  float occ = 0.0;
+  const vec3 dist = vec3(0.0045, 0.0085, 0.0135);
+  const vec3 weight = vec3(0.5, 0.32, 0.18);
+  for (int i = 0; i < 3; i++) {
+    vec3 t = (vPlatePos + n * dist[i] - uGridMin) / uGridSize;
+    if (all(greaterThanEqual(t, vec3(0.0))) && all(lessThanEqual(t, vec3(1.0)))) occ += weight[i] * texture(uGrid, t).r;
+  }
+  return occ;
+}
+#endif`;
+
+export function patchBlockShader<T extends Material>(mat: T, finish = 'plastic', contact = false): T {
   const wood = finish === 'wood';
   const clear = finish === 'clear';
   if (clear) mat.premultipliedAlpha = true;
+  if (contact) (mat as T & { defines: Record<string, string> }).defines = { ...(mat as T & { defines?: Record<string, string> }).defines, STACKER_CONTACT: '' };
   mat.onBeforeCompile = (shader) => {
     shader.uniforms.uOcclusion = OCCLUSION;
+    shader.uniforms.uGrid = CONTACT.grid;
+    shader.uniforms.uPlateInv = CONTACT.plateInv;
+    shader.uniforms.uGridMin = CONTACT.min;
+    shader.uniforms.uGridSize = CONTACT.size;
     shader.vertexShader = shader.vertexShader
       .replace(
         '#include <common>',
-        '#include <common>\nattribute vec4 fixedColor;\nattribute float ao;\nvarying vec4 vFixedColor;\nvarying vec3 vLocal;\nvarying float vAo;',
+        `#include <common>
+attribute vec4 fixedColor;
+attribute float ao;
+varying vec4 vFixedColor;
+varying vec3 vLocal;
+varying float vAo;
+#ifdef STACKER_CONTACT
+uniform mat4 uPlateInv;
+varying vec3 vPlatePos;
+varying vec3 vPlateNormal;
+#endif`,
       )
-      .replace('#include <begin_vertex>', '#include <begin_vertex>\nvFixedColor = fixedColor;\nvLocal = position * 1000.0;\nvAo = ao;');
+      .replace('#include <begin_vertex>', `#include <begin_vertex>\nvFixedColor = fixedColor;\nvLocal = position * 1000.0;\nvAo = ao;${CONTACT_VERTEX}`);
     let frag = shader.fragmentShader
       .replace(
         '#include <common>',
-        `#include <common>\nvarying vec4 vFixedColor;\nvarying vec3 vLocal;\nvarying float vAo;\nuniform float uOcclusion;\n${wood ? WOOD_GLSL : ''}`,
+        `#include <common>\nvarying vec4 vFixedColor;\nvarying vec3 vLocal;\nvarying float vAo;\nuniform float uOcclusion;\n${CONTACT_FRAGMENT}\n${wood ? WOOD_GLSL : ''}`,
       )
       .replace(
         '#include <color_fragment>',
@@ -122,6 +186,9 @@ export function patchBlockShader<T extends Material>(mat: T, finish = 'plastic')
         '#include <lights_fragment_end>',
         `#include <lights_fragment_end>
 float occlusion = clamp(vAo * uOcclusion, 0.0, 1.0);
+#ifdef STACKER_CONTACT
+occlusion = 1.0 - (1.0 - occlusion) * (1.0 - clamp(contactOcclusion() * uOcclusion, 0.0, 0.85));
+#endif
 reflectedLight.indirectDiffuse *= 1.0 - occlusion;
 reflectedLight.indirectSpecular *= 1.0 - occlusion * 0.8;
 reflectedLight.directDiffuse *= 1.0 - occlusion * 0.5;`,
@@ -149,7 +216,7 @@ vec3 outgoingLight = totalDiffuse * diffuseColor.a * 0.55 + totalSpecular + tota
     }
     shader.fragmentShader = frag;
   };
-  mat.customProgramCacheKey = () => `stacker-block-${finish}`;
+  mat.customProgramCacheKey = () => `stacker-block-${finish}-${contact}`;
   return mat;
 }
 

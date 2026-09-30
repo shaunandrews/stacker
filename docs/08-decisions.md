@@ -61,3 +61,6 @@ Edge highlights carry the LEGO look. Chamfering hard edges at build time costs t
 
 ### Real HDRIs for reflections (Sept 2026)
 The procedural environments (gradient spheres and glowing panels) gave plastic flat, fake reflections. Real CC0 HDRIs put believable windows and falloff into every highlight for ~1.5 MB each, loaded only when chosen. 1k is enough — reflections are blurred by roughness anyway — and 2k would be ~6 MB each.
+
+### Occlusion baked per part and voxelized between parts (Sept 2026)
+SSAO needs a depth pre-pass and post-processing, which multiview WebXR can't afford. Occlusion splits cleanly instead: inside a part it never changes, so it's baked per vertex in the pipeline (free at runtime, stored in a spare byte); between parts, the build is already a grid of studs and plates, so a small occupancy texture sampled along the normal gives soft Minecraft-style contact shadows, updated only when the build changes.

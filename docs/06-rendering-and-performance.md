@@ -50,6 +50,8 @@ Parts are bevelled in the pipeline (0.2 mm chamfer on hard convex edges, normals
 ## Ambient occlusion
 
 - **Baked, per part** (`bakeAO` in `build-parts.mjs`): each vertex casts 24 cosine-weighted rays up to 12 LDU against the part's own triangles (uniform grid, ~17 s for all parts); closer hits darken more. Stored in the spare 4th byte of each packed normal, so `parts.bin` doesn't grow. Darkens stud bases, bevel creases and hollows. Plate studs carry the same at their foot (`studGeometry`)
+- **Contact, between blocks** (`updateContact`): an R8 `Data3DTexture` over the plate, one texel per stud cell × plate height (≤ 64 × 128 × 64), with every placed block's collision box rasterized into it. Rebuilt only when the build or plate changes (`editGen`/`platformGen`), never per frame; the platform's world→local matrix is the only per-frame update. Placed blocks (the uncolored batch materials) and the plate sample it 4.5, 8.5 and 13.5 mm out along the surface normal (trilinear) — starting half a cell out so a block never darkens itself — for soft darkening where blocks meet, at wall bases and under overhangs. Loose, held, catalog, box-art and manual materials don't (`STACKER_CONTACT` define)
+- **Occlusion** slider (Advanced, 0–2, default 1) scales both
 - **Applied** in `patchBlockShader`: indirect diffuse × (1 − ao), indirect specular × (1 − 0.8 ao), direct diffuse × (1 − 0.5 ao), scaled by the shared `OCCLUSION` uniform
 
 ## Lighting
