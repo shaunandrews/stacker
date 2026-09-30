@@ -11,7 +11,7 @@ export default capsule({
       blocks: number().default(0),
       visibility: string().default("friends"),
     }).index("by_owner", ["owner"]),
-    links: table({ code: string(), device: userId(), account: string().optional() }).index("by_code", ["code"]),
+    links: table({ code: string(), device: userId(), account: string().optional() }).index("by_code", ["code"]).index("by_device", ["device"]),
   },
   auth: {
     onGuestUpgrade(ctx, { guestUserId, userId }) {
@@ -19,6 +19,18 @@ export default capsule({
     },
   },
   queries: {
+    // Phone pairing: the headset (a guest) makes a code; a signed-in phone claims it.
+    myPair: query(async (ctx) => {
+      const { userId } = ctx.auth.requireIdentity();
+      const rows = await ctx.db.links.withIndex("by_device", (r) => r.eq("device", userId)).collect();
+      const row = rows[rows.length - 1];
+      return row ? { code: row.code, account: row.account ?? null } : null;
+    }),
+    whoAmI: query(async (ctx) => {
+      const me = ctx.auth.userId;
+      const linked = me ? (await ctx.db.links.withIndex("by_device", (r) => r.eq("device", me)).collect()).find((l) => l.account) : undefined;
+      return { userId: me, isGuest: ctx.auth.isGuest, isSignedIn: ctx.auth.isSignedIn, provider: ctx.auth.provider, effectiveUser: linked?.account ?? me };
+    }),
     myBuilds: query(async (ctx) => {
       const { userId } = ctx.auth.requireIdentity();
       const rows = await ctx.db.builds.withIndex("by_owner", (r) => r.eq("owner", userId)).collect();
@@ -26,6 +38,20 @@ export default capsule({
     }),
   },
   mutations: {
+    createPair: mutation(async (ctx) => {
+      const { userId } = ctx.auth.requireIdentity();
+      const code = (await ctx.crypto.sha256(`${userId}:${Date.now()}:${Math.random()}`)).slice(0, 6).toUpperCase();
+      await ctx.db.links.insert({ code, device: userId });
+      return code;
+    }),
+    claimPair: mutation(async (ctx, code: string) => {
+      const { userId } = ctx.auth.requireSignedIn();
+      const row = await ctx.db.links.withIndex("by_code", (r) => r.eq("code", code.trim().toUpperCase())).first();
+      if (!row) throw new Error("No such code");
+      if (row.account) throw new Error("Code already used");
+      await ctx.db.links.update(row.id, { account: userId });
+      return { device: row.device };
+    }),
     saveBuild: mutation(async (ctx, title: string, data: string, blocks: number) => {
       const { userId } = ctx.auth.requireIdentity();
       return (await ctx.db.builds.insert({ owner: userId, title, data, blocks })).id;

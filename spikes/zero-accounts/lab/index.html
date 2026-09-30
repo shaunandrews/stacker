@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Zero lab</title>
+    <style>
+      body { font: 16px/1.5 system-ui, sans-serif; max-width: 40rem; margin: 2rem auto; padding: 0 16px; background: #0e1016; color: #f3f5f9; }
+      button { font: inherit; padding: 10px 14px; margin: 4px 4px 4px 0; border-radius: 10px; border: 1px solid #333a4c; background: #1c202b; color: inherit; cursor: pointer; }
+      button.primary { background: #5b8def; border-color: transparent; }
+      input { font: inherit; padding: 9px 12px; border-radius: 10px; border: 1px solid #333a4c; background: #161922; color: inherit; width: 8em; }
+      section { border: 1px solid #272c3a; border-radius: 12px; padding: 12px 16px; margin: 12px 0; }
+      h2 { font-size: 15px; margin: 0 0 6px; color: #98a2b5; text-transform: uppercase; letter-spacing: .04em; }
+      pre { white-space: pre-wrap; font-size: 13px; color: #b8c0cf; margin: 0; }
+      .code { font-size: 40px; font-weight: 800; letter-spacing: .15em; }
+    </style>
+  </head>
+  <body>
+    <h1>Zero lab</h1>
+    <p>Stacker accounts spike: a page built by Vite (like Stacker) using Spacefast Zero through a hidden Preact bridge.</p>
+    <section><h2>Who am I</h2><pre id="who">loading…</pre>
+      <button class="primary" id="google">Sign in with Google</button>
+      <button id="gravatar">Sign in with Gravatar</button>
+      <button id="out">Sign out</button></section>
+    <section><h2>Builds (live)</h2><pre id="builds">…</pre>
+      <button data-kb="10">Save 10 KB</button><button data-kb="40">Save 40 KB</button><button data-kb="80">Save 80 KB</button><button data-kb="200">Save 200 KB</button></section>
+    <section><h2>Pair with phone</h2>
+      <p>Headset: make a code. Phone: open this page, sign in, enter the code.</p>
+      <button id="pair">Make a code</button> <span class="code" id="code"></span>
+      <div><input id="claim" placeholder="CODE" /> <button id="claimBtn">Claim on this device</button></div>
+      <pre id="pairOut"></pre></section>
+    <section><h2>Log</h2><pre id="log"></pre></section>
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>
