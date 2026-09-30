@@ -9,6 +9,8 @@ import {
   MeshBasicMaterial,
   MeshStandardMaterial,
   NeutralToneMapping,
+  Object3D,
+  OrthographicCamera,
   PerspectiveCamera,
   PlaneGeometry,
   PMREMGenerator,
@@ -45,6 +47,8 @@ export type BoxState = 'rack' | 'held' | 'loose' | 'returning' | 'opening';
 export const TEAR_PULL = 0.09; // meters the strip's tab has to travel to tear it off
 
 const ART = 640;
+// Manual views look from the front-right, a little above: close to classic instruction booklets.
+const ISO = new Vector3(0.75, 0.72, 1).normalize();
 const FACE_W = 768;
 const STRIP_W = 0.012;
 const STRIP_H = 0.0012;
@@ -153,6 +157,9 @@ export class ArtRenderer {
   private readonly renderer: WebGLRenderer;
   private readonly scene = new Scene();
   private readonly camera = new PerspectiveCamera(26, 1, 0.01, 10);
+  private readonly ortho = new OrthographicCamera(-1, 1, 1, -1, 0.001, 10);
+  private lastW = ART;
+  private lastH = ART;
 
   constructor() {
     this.renderer = new WebGLRenderer({ antialias: true, alpha: true, preserveDrawingBuffer: true });
@@ -211,6 +218,66 @@ export class ArtRenderer {
     out.getContext('2d')!.drawImage(this.renderer.domElement, 0, 0);
     this.scene.remove(group);
     return out;
+  }
+
+  /**
+   * A flat isometric view of `group` (instruction-manual style), w×h pixels on a transparent
+   * canvas. `frame` fixes the framing (defaults to the group's own bounds).
+   */
+  renderIso(group: Object3D, w: number, h: number, frame?: Box3): HTMLCanvasElement {
+    this.scene.add(group);
+    group.updateMatrixWorld(true);
+    const box = frame ?? new Box3().setFromObject(group);
+    const center = box.getCenter(new Vector3());
+    const r = Math.max(box.getSize(new Vector3()).length(), 1e-3);
+    const cam = this.ortho;
+    cam.position.copy(center).addScaledVector(ISO, r * 2);
+    cam.lookAt(center);
+    cam.updateMatrixWorld();
+    const lo = new Vector3(Infinity, Infinity, 0);
+    const hi = new Vector3(-Infinity, -Infinity, 0);
+    const c = new Vector3();
+    for (let k = 0; k < 8; k++) {
+      c.set(k & 1 ? box.max.x : box.min.x, k & 2 ? box.max.y : box.min.y, k & 4 ? box.max.z : box.min.z).applyMatrix4(cam.matrixWorldInverse);
+      lo.min(c);
+      hi.max(c);
+    }
+    // Box corners overshoot the model's silhouette, so the margin is small.
+    let hw = ((hi.x - lo.x) / 2) * 1.02;
+    let hh = ((hi.y - lo.y) / 2) * 1.02;
+    if (hw / hh > w / h) hh = (hw * h) / w;
+    else hw = (hh * w) / h;
+    const cx = (lo.x + hi.x) / 2;
+    const cy = (lo.y + hi.y) / 2;
+    cam.left = cx - hw;
+    cam.right = cx + hw;
+    cam.top = cy + hh;
+    cam.bottom = cy - hh;
+    cam.near = 0.0001;
+    cam.far = r * 4;
+    cam.updateProjectionMatrix();
+    // Fat lines are sized in pixels: tell their materials the canvas size.
+    group.traverse((o) => {
+      const m = (o as Mesh).material as { isLineMaterial?: boolean; resolution?: { set(x: number, y: number): void } };
+      if (m?.isLineMaterial) m.resolution!.set(w, h);
+    });
+    this.renderer.setSize(w, h, false);
+    this.renderer.render(this.scene, cam);
+    this.lastW = w;
+    this.lastH = h;
+    const out = document.createElement('canvas');
+    out.width = w;
+    out.height = h;
+    out.getContext('2d')!.drawImage(this.renderer.domElement, 0, 0);
+    this.renderer.setSize(ART, ART, false);
+    this.scene.remove(group);
+    return out;
+  }
+
+  /** Where a world point landed in the last isometric render, in its canvas pixels. */
+  project(p: Vector3): [number, number] {
+    const v = p.clone().project(this.ortho);
+    return [((v.x + 1) / 2) * this.lastW, ((1 - v.y) / 2) * this.lastH];
   }
 
   dispose(): void {

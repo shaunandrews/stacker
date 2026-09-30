@@ -97,14 +97,18 @@ A tray to the right of the platform, tilted toward you, with a grab bar and a "T
 
 The magnet stays on in every mode, so free parts can still be placed.
 
-![Manual page](images/v7-manual.png)
+![Manual page](images/v10-manual.png)
 
-**Manual** is a movable panel:
+**Manual** is a movable panel drawn like a printed instruction booklet (a cream page with a frame), one page per step:
 
-- Title: "Kit · step n of N"
-- Parts callout: up to 8 part/color groups with counts (e.g. "4×")
-- A slowly turning miniature of the model **as built through that page's step**, with that step's new pieces outlined in yellow
+- A circled step number, and a blue callout top right with each part/color the step needs, drawn on its own with a count ("2x")
+- The model built so far, flat and isometric: cel-shaded colors (three tones) with bold outlines (fat lines from each part's edges); near-black parts print dark grey with lighter outlines
+- This step's parts float just above their spots along their own up axis, with dashed arrows down into place
+- Small models are framed whole; once the model is much bigger than the step, the view zooms to the step's parts
+- Pages are rendered by the same throwaway WebGL context as the box art (`ArtRenderer.renderIso`), kept while the manual is open
 - ◀ / ▶ page freely; the middle button jumps back to the step you're on; it follows along automatically when you complete a step
+
+Large sets with steps spread across the model (Fire Station) still render small; the pages are only as good as the model's authored steps.
 
 ## Adding a kit
 

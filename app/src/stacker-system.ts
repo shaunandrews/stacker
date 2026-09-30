@@ -2,6 +2,7 @@ import {
   ACESFilmicToneMapping,
   AgXToneMapping,
   BackSide,
+  Box3,
   BoxGeometry,
   BufferAttribute,
   BufferGeometry,
@@ -10,8 +11,10 @@ import {
   Color,
   createSystem,
   CylinderGeometry,
+  DataTexture,
   DirectionalLight,
   EdgesGeometry,
+  Group,
   Entity,
   Euler,
   HemisphereLight,
@@ -24,12 +27,15 @@ import {
   Mesh,
   MeshBasicMaterial,
   MeshStandardMaterial,
+  MeshToonMaterial,
+  NearestFilter,
   NeutralToneMapping,
   NoToneMapping,
   Object3D,
   PCFShadowMap,
   PMREMGenerator,
   PlaneGeometry,
+  RedFormat,
   RingGeometry,
   Quaternion,
   SphereGeometry,
@@ -39,11 +45,14 @@ import {
 } from '@iwsdk/core';
 import type { Material, Texture, ToneMapping } from '@iwsdk/core';
 import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js';
+import { LineMaterial } from 'three/examples/jsm/lines/LineMaterial.js';
+import { LineSegments2 } from 'three/examples/jsm/lines/LineSegments2.js';
+import { LineSegmentsGeometry } from 'three/examples/jsm/lines/LineSegmentsGeometry.js';
 import { dims, isSymmetric, Library, studGeometry, TABS } from './blocks.js';
 import { DesktopControls } from './desktop.js';
 import { ArtRenderer, KitBox, TEAR_PULL } from './kit-boxes.js';
 import type { ArtPiece, KitInfo } from './kit-boxes.js';
-import { ENVS, finishIndex, FINISHES, makeBackdrop, makeEnvScene, makeFinish, paintBackdrop, STYLES } from './look.js';
+import { ENVS, finishIndex, FINISHES, makeBackdrop, makeEnvScene, makeFinish, paintBackdrop, patchBlockShader, STYLES } from './look.js';
 import { progress } from './splash.js';
 
 // ---- Platform (world meters ÷ the Size scale = platform-local units) ----
@@ -53,7 +62,8 @@ const MAX_STUDS = 64;
 const START_STUDS = 32;
 const MAX_LEVEL = 400; // half plates
 const SNAP_DROP = 0.05;
-const HANDLE_OUT = 0.024;
+const HANDLE_OUT = 0.017;
+const HANDLE_IDLE = 0.55; // handle opacity until a hand points at one
 const LEVEL_SNAP = (7 * Math.PI) / 180;
 
 // ---- Input ----
@@ -398,6 +408,8 @@ export class StackerSystem extends createSystem({}) {
   private envCache = new Map<string, Texture>();
   private backdrop!: Mesh;
   private plateMat!: MeshStandardMaterial;
+  private handleMat!: MeshStandardMaterial;
+  private cornerMat!: MeshStandardMaterial;
   private edgeGeos = new Map<number, BufferGeometry>();
   private ghostLineMat!: LineBasicMaterial;
   private ghostLitMat!: LineBasicMaterial;
@@ -446,7 +458,16 @@ export class StackerSystem extends createSystem({}) {
   private slot = 0;
   private statsCanvas: HTMLCanvasElement | null = null;
   private statsTex: CanvasTexture | null = null;
-  private mini: Object3D | null = null;
+  // Manual pages: drawn like a paper instruction booklet, models rendered flat and isometric.
+  private pageCanvas: HTMLCanvasElement | null = null;
+  private pageTex: CanvasTexture | null = null;
+  private manualArt: ArtRenderer | null = null;
+  private thumbs = new Map<string, HTMLCanvasElement>();
+  private toonMats = new Map<number, Material>();
+  private inkGeos = new Map<number, LineSegmentsGeometry>();
+  private inkMat = new LineMaterial({ color: 0x1d1f24, linewidth: 3 });
+  private inkLightMat = new LineMaterial({ color: 0x8a8f99, linewidth: 2.5 }); // outlines on near-black parts
+  private toonRamp: DataTexture | null = null;
 
   // Kit shelf
   private shelf: Entity | null = null;
@@ -644,6 +665,9 @@ export class StackerSystem extends createSystem({}) {
     }
     // The library turns red while a held block is over it: letting go removes it.
     (this.library.bg.material as MeshBasicMaterial).color.setHex(trash ? 0x5c1f27 : PANEL_BG);
+    let hot = false;
+    for (const h of this.hands) hot ||= h.frame === 'platform' || h.target?.kind === 'edge' || h.target?.kind === 'corner';
+    this.handleMat.opacity = this.cornerMat.opacity = hot ? 1 : HANDLE_IDLE;
     this.tickSnaps(delta);
     this.tickBoxes(delta);
     this.tickPoofs(delta);
@@ -658,7 +682,6 @@ export class StackerSystem extends createSystem({}) {
       this.redrawUi();
     }
     this.spinPreviews(delta);
-    if (this.mini) this.mini.rotation.y += delta * 0.35;
     this.updateSelectionOutlines();
     // Redraw shadows only while something that casts them moves, or after a change —
     // last, so everything this frame changed is in.
@@ -877,16 +900,16 @@ export class StackerSystem extends createSystem({}) {
     this.plateStuds.receiveShadow = true;
     this.child(this.root, this.plateStuds);
 
-    const handleMat = new MeshStandardMaterial({ color: 0xf1f5f9, roughness: 0.3 });
-    const cornerMat = new MeshStandardMaterial({ color: 0xfbbf24, roughness: 0.35 });
-    const edgeGeo = new CapsuleGeometry(0.008, 0.09, 4, 10);
+    const handleMat = (this.handleMat = new MeshStandardMaterial({ color: 0xe2e8f0, roughness: 0.4, transparent: true, opacity: HANDLE_IDLE }));
+    const cornerMat = (this.cornerMat = new MeshStandardMaterial({ color: 0xfbbf24, roughness: 0.4, transparent: true, opacity: HANDLE_IDLE }));
+    const edgeGeo = new CapsuleGeometry(0.0045, 0.06, 4, 10);
     for (let k = 0; k < 4; k++) {
       const edge = new Mesh(edgeGeo, handleMat);
       edge.name = 'EdgeHandle';
       this.child(this.root, edge);
       this.edges.push(edge);
     }
-    const cornerGeo = new SphereGeometry(0.011, 16, 12);
+    const cornerGeo = new SphereGeometry(0.0065, 16, 12);
     for (let k = 0; k < 4; k++) {
       const corner = new Mesh(cornerGeo, cornerMat);
       corner.name = 'CornerHandle';
@@ -977,11 +1000,11 @@ export class StackerSystem extends createSystem({}) {
       // Desktop: panels stand upright behind the plate's sides, facing a camera out front.
       place(this.library.entity.object3D!, x0 * P - 0.2, this.library.h / 2 - 0.02, z0 * P + 0.08, 0.3, 0);
       place(this.settings.entity.object3D!, x1 * P + 0.28, this.settings.h / 2 - 0.02, z0 * P + 0.02, -0.3, 0);
-      if (this.manual) place(this.manual.entity.object3D!, x1 * P + 0.22, 0.24, zc + 0.12, -0.7, -0.2);
+      if (this.manual) place(this.manual.entity.object3D!, x1 * P + 0.22, 0.29, zc + 0.12, -0.7, -0.2);
     } else {
       place(this.library.entity.object3D!, x0 * P - 0.21, 0.17, zc + 0.06, 0.55, -0.3);
       place(this.settings.entity.object3D!, x0 * P - 0.6, 0.2 + (0.57 - this.settings.h) / 2, zc + 0.24, 1.05, -0.25);
-      if (this.manual) place(this.manual.entity.object3D!, x1 * P + 0.2, 0.24, zc - 0.08, -0.55, -0.3);
+      if (this.manual) place(this.manual.entity.object3D!, x1 * P + 0.2, 0.3, zc - 0.1, -0.55, -0.3);
     }
     if (this.shelf) this.placeShelf();
     this.placeRack();
@@ -1019,14 +1042,14 @@ export class StackerSystem extends createSystem({}) {
     const entity = this.track(this.world.createTransformEntity(holder));
     this.child(entity, bg);
     const bar = new Mesh(
-      new CapsuleGeometry(0.009, 0.12, 4, 10).rotateZ(Math.PI / 2),
-      new MeshStandardMaterial({ color: 0xf1f5f9, roughness: 0.3 }),
+      new CapsuleGeometry(0.005, 0.08, 4, 10).rotateZ(Math.PI / 2),
+      new MeshStandardMaterial({ color: 0xe2e8f0, roughness: 0.4 }),
     );
     bar.name = 'PanelHandle';
     this.child(entity, bar);
     let resize: Mesh | null = null;
     if (resizable) {
-      resize = new Mesh(new SphereGeometry(0.011, 16, 12), new MeshStandardMaterial({ color: 0xfbbf24, roughness: 0.35 }));
+      resize = new Mesh(new SphereGeometry(0.007, 16, 12), new MeshStandardMaterial({ color: 0xfbbf24, roughness: 0.4 }));
       resize.name = 'PanelResize';
       this.child(entity, resize);
     }
@@ -1038,7 +1061,7 @@ export class StackerSystem extends createSystem({}) {
 
   private sizePanel(p: Panel): void {
     p.bg.scale.set(p.w, p.h, 0.008);
-    p.bar.position.set(0, -p.h / 2 - 0.022, 0.006);
+    p.bar.position.set(0, -p.h / 2 - 0.016, 0.006);
     p.resize?.position.set(p.w / 2 + 0.008, -p.h / 2 - 0.008, 0.006);
   }
 
@@ -2691,20 +2714,22 @@ export class StackerSystem extends createSystem({}) {
     const u = dims.unit;
     const s = this.scale;
 
+    // Platform handles give way to blocks near them: a block within this much wins.
+    const yieldTo = far ? 0.03 : 0.012;
     this.edges.forEach((obj) => {
-      const sc = this.probeObject(h, obj, 0.014, 0.06, 0.014, far);
-      if (sc < limit) best = this.consider(best, { kind: 'edge', frame: 'platform', obj, score: sc });
+      const sc = this.probeObject(h, obj, 0.009, 0.04, 0.009, far);
+      if (sc < limit) best = this.consider(best, { kind: 'edge', frame: 'platform', obj, score: sc + yieldTo });
     });
     this.corners.forEach((obj, corner) => {
-      const sc = this.probeObject(h, obj, 0.016, 0.016, 0.016, far);
-      if (sc < limit) best = this.consider(best, { kind: 'corner', obj, corner, score: sc });
+      const sc = this.probeObject(h, obj, 0.011, 0.011, 0.011, far);
+      if (sc < limit) best = this.consider(best, { kind: 'corner', obj, corner, score: sc + yieldTo });
     });
     if (this.shelfBar) {
-      const sc = this.probeObject(h, this.shelfBar, 0.075, 0.014, 0.014, far);
+      const sc = this.probeObject(h, this.shelfBar, 0.05, 0.011, 0.011, far);
       if (sc < limit) best = this.consider(best, { kind: 'bar', frame: 'shelf', obj: this.shelfBar, score: sc });
     }
     if (this.rackShown()) {
-      const sc = this.probeObject(h, this.rackBar!, 0.085, 0.014, 0.014, far);
+      const sc = this.probeObject(h, this.rackBar!, 0.055, 0.011, 0.011, far);
       if (sc < limit) best = this.consider(best, { kind: 'bar', frame: 'rack', obj: this.rackBar!, score: sc });
     }
     for (const b of this.boxes) {
@@ -2720,10 +2745,10 @@ export class StackerSystem extends createSystem({}) {
     }
 
     for (const p of this.panels) {
-      const sc = this.probeObject(h, p.bar, 0.075, 0.014, 0.014, far);
+      const sc = this.probeObject(h, p.bar, 0.05, 0.011, 0.011, far);
       if (sc < limit) best = this.consider(best, { kind: 'bar', frame: p.id, obj: p.bar, score: sc });
       if (p.resize) {
-        const rs = this.probeObject(h, p.resize, 0.016, 0.016, 0.016, far);
+        const rs = this.probeObject(h, p.resize, 0.012, 0.012, 0.012, far);
         if (rs < limit) best = this.consider(best, { kind: 'resize', frame: p.id, obj: p.resize, score: rs });
       }
       const obj = p.entity.object3D!;
@@ -3763,13 +3788,13 @@ export class StackerSystem extends createSystem({}) {
   private applyInstructions(): void {
     const wantManual = !!this.kit && this.instructions !== 'ghosts';
     if (wantManual && !this.manual) {
-      this.manual = this.createPanel('manual', 0.3, 0.36, false);
+      this.manual = this.createPanel('manual', 0.34, 0.46, false);
       this.layoutManual();
       const r = this.root.object3D!;
       const P = dims.pitch * this.scale;
       const obj = this.manual.entity.object3D!;
       obj.position
-        .set(this.bounds.x1 * P + 0.2, 0.24, ((this.bounds.z0 + this.bounds.z1) / 2) * P - 0.08)
+        .set(this.bounds.x1 * P + 0.2, 0.3, ((this.bounds.z0 + this.bounds.z1) / 2) * P - 0.1)
         .applyQuaternion(r.quaternion)
         .add(r.position);
       obj.quaternion.copy(r.quaternion).multiply(this.q1.setFromEuler(this.euler.set(-0.3, -0.55, 0, 'YXZ')));
@@ -3777,7 +3802,11 @@ export class StackerSystem extends createSystem({}) {
     } else if (!wantManual && this.manual) {
       this.destroyPanel(this.manual);
       this.manual = null;
-      this.mini = null;
+      this.manualArt?.dispose();
+      this.manualArt = null;
+      this.pageTex?.dispose();
+      this.pageTex = null;
+      this.pageCanvas = null;
     }
     if (this.kit) for (const r of this.kit.remaining) r.ghost.object3D!.visible = this.instructions !== 'manual';
   }
@@ -3786,16 +3815,35 @@ export class StackerSystem extends createSystem({}) {
     const p = this.manual!;
     this.clearPanel(p);
     const inner = p.w - 2 * MARGIN;
-    this.addUi(p, 'man:title', 'label', 0, 0, p.h / 2 - MARGIN - 0.014, inner, 0.028);
+    const titleY = p.h / 2 - MARGIN - 0.014;
+    this.addUi(p, 'man:title', 'label', 0, 0, titleY, inner, 0.028);
     const y = -p.h / 2 + MARGIN + 0.013;
     this.addUi(p, 'man:prev', 'button', 0, -inner / 2 + 0.03, y, 0.06, 0.026);
     this.addUi(p, 'man:here', 'button', 0, 0, y, 0.12, 0.026);
     this.addUi(p, 'man:next', 'button', 0, inner / 2 - 0.03, y, 0.06, 0.026);
+    // The page itself: a sheet of paper each step is drawn on.
+    const top = titleY - 0.014 - GAP;
+    const bottom = y + 0.013 + GAP;
+    const ph = top - bottom;
+    if (!this.pageCanvas) {
+      this.pageCanvas = document.createElement('canvas');
+      this.pageCanvas.width = 1024;
+      this.pageCanvas.height = Math.round((1024 * ph) / inner);
+      this.pageTex = new CanvasTexture(this.pageCanvas);
+      this.pageTex.colorSpace = SRGBColorSpace;
+      this.pageTex.anisotropy = 4;
+    }
+    const sheet = new Mesh(new PlaneGeometry(inner, ph), new MeshBasicMaterial({ map: this.pageTex, toneMapped: false }));
+    p.owned.push(sheet.geometry, sheet.material as Material);
+    sheet.position.set(0, (top + bottom) / 2, 0.001);
+    this.addContent(p, sheet);
   }
 
   /**
-   * A manual page: the step's parts across the top (with counts), and the model
-   * as built through this step as a slowly turning miniature, new parts outlined.
+   * A manual page, drawn like a printed instruction booklet: a circled step number, a
+   * callout of the parts it needs, and the model built so far in flat, outlined
+   * isometric, with this step's parts floating just above their spots and dashed
+   * arrows down into place.
    */
   private showPage(n: number): void {
     const kit = this.kit;
@@ -3803,7 +3851,37 @@ export class StackerSystem extends createSystem({}) {
     if (!kit || !p) return;
     kit.page = n;
     this.layoutManual();
-    // Parts callout.
+    const canvas = this.pageCanvas!;
+    const ctx = canvas.getContext('2d')!;
+    const W = canvas.width;
+    const H = canvas.height;
+    const font = 'system-ui, -apple-system, sans-serif';
+    const ink = '#1d1f24';
+    this.manualArt ??= new ArtRenderer();
+    const art = this.manualArt;
+    ctx.fillStyle = '#f7f1e3';
+    ctx.fillRect(0, 0, W, H);
+    ctx.strokeStyle = ink;
+    ctx.lineWidth = 5;
+    ctx.beginPath();
+    ctx.roundRect(12, 12, W - 24, H - 24, 22);
+    ctx.stroke();
+
+    // Circled step number
+    const r = W * 0.075;
+    const nx = W * 0.05 + r;
+    const ny = W * 0.05 + r;
+    ctx.lineWidth = 6;
+    ctx.beginPath();
+    ctx.arc(nx, ny, r, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.fillStyle = ink;
+    ctx.font = `800 ${Math.round(r * (n + 1 > 9 ? 0.95 : 1.2))}px ${font}`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(String(n + 1), nx, ny + r * 0.06);
+
+    // Parts callout, top right
     const counts = new Map<string, { part: number; color: number; n: number }>();
     for (const b of kit.steps[n]) {
       const part = this.lib.byId.get(b.part);
@@ -3813,78 +3891,157 @@ export class StackerSystem extends createSystem({}) {
       c.n++;
       counts.set(key, c);
     }
-    const entries = [...counts.values()].slice(0, 8);
-    const slotW = (p.w - 2 * MARGIN) / Math.max(4, entries.length);
-    const cy = p.h / 2 - MARGIN - 0.028 - 0.03;
-    entries.forEach((c, k) => {
-      const x = -p.w / 2 + MARGIN + slotW / 2 + k * slotW;
-      const def = this.lib.parts[c.part];
-      const mesh = new Mesh(this.lib.geometries[c.part], this.matFor(0, c.color));
-      const extent = Math.max(def.w * dims.pitch, def.d * dims.pitch, def.h * dims.unit);
-      mesh.scale.setScalar(Math.min(3, 0.026 / extent));
-      mesh.position.set(x, cy + 0.005, 0.015);
-      mesh.rotation.set(0.5, -0.6, 0);
-      this.addContent(p, mesh);
-      this.addUi(p, `man:count:${k}`, 'label', 0, x, cy - 0.024, slotW - 0.004, 0.016);
-      const item = p.items[p.items.length - 1];
-      const ctx = item.canvas!.getContext('2d')!;
-      ctx.clearRect(0, 0, item.canvas!.width, item.canvas!.height);
-      ctx.fillStyle = '#ffffff';
-      ctx.font = `700 ${Math.round(item.canvas!.height * 0.9)}px system-ui, sans-serif`;
+    const entries = [...counts.values()];
+    const thumb = Math.round(W * 0.15);
+    const gap = Math.round(W * 0.015);
+    const pad = Math.round(W * 0.022);
+    const right = W * 0.95;
+    const maxW = right - (nx + r + W * 0.05);
+    const perRow = Math.max(1, Math.floor((maxW - pad * 2 + gap) / (thumb + gap)));
+    const rows = Math.ceil(entries.length / perRow);
+    const cols = Math.min(perRow, entries.length);
+    const bw = pad * 2 + cols * thumb + (cols - 1) * gap;
+    const bh = pad * 2 + rows * thumb + (rows - 1) * gap;
+    const bx = right - bw;
+    const by = W * 0.05;
+    ctx.fillStyle = '#cfe3f3';
+    ctx.strokeStyle = ink;
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.roundRect(bx, by, bw, bh, 14);
+    ctx.fill();
+    ctx.stroke();
+    entries.forEach((e, k) => {
+      const x = bx + pad + (k % perRow) * (thumb + gap);
+      const y = by + pad + Math.floor(k / perRow) * (thumb + gap);
+      ctx.drawImage(this.partThumb(e.part, e.color), x, y, thumb, thumb * 0.8);
+      ctx.fillStyle = ink;
+      ctx.font = `800 ${Math.round(thumb * 0.22)}px ${font}`;
       ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.fillText(`${c.n}×`, item.canvas!.width / 2, item.canvas!.height / 2);
-      item.tex!.needsUpdate = true;
+      ctx.textBaseline = 'bottom';
+      ctx.fillText(`${e.n}x`, x + thumb / 2, y + thumb + 2);
     });
-    // Miniature of the model through this step.
-    const recs: Array<{ rec: Placed; current: boolean }> = [];
+
+    // The model so far; this step's parts lifted along their own up axis.
+    const top = Math.max(by + bh, ny + r) + W * 0.02;
+    const areaH = Math.max(64, Math.round(H - top - W * 0.04));
+    const model = new Group();
+    const arrows: Array<[Vector3, Vector3]> = [];
+    const fresh: Mesh[] = [];
+    const lift = 0.02;
     kit.steps.slice(0, n + 1).forEach((step, k) => {
       for (const b of step) {
-        const rec = this.kitRec(b);
-        if (rec) recs.push({ rec, current: k === n });
+        const piece = this.kitPiece(b, 0, 0);
+        if (!piece) continue;
+        const m = piece.m.clone();
+        if (k === n) {
+          const up = new Vector3(0, 1, 0).applyQuaternion(new Quaternion().setFromRotationMatrix(m));
+          const half = (this.lib.parts[piece.part].h * dims.unit) / 2;
+          const at = new Vector3().setFromMatrixPosition(m);
+          arrows.push([at.clone().addScaledVector(up, lift - half * 0.2), at.clone().addScaledVector(up, half)]);
+          m.premultiply(new Matrix4().makeTranslation(up.x * lift, up.y * lift, up.z * lift));
+        }
+        const mesh = this.addInked(model, piece.part, piece.color, m);
+        if (k === n) fresh.push(mesh);
       }
     });
-    const min = new Vector3(Infinity, Infinity, Infinity);
-    const max = new Vector3(-Infinity, -Infinity, -Infinity);
-    for (const { rec } of recs) {
-      this.placedCenter(rec, this.v1);
-      min.min(this.v1);
-      max.max(this.v1);
+    // Frame the whole model while it's small next to this step; zoom in on the step's
+    // area once it's big (like booklets do for large sets).
+    model.updateMatrixWorld(true);
+    const all = new Box3().setFromObject(model);
+    const step = new Box3();
+    for (const mesh of fresh) step.expandByObject(mesh);
+    for (const [, to] of arrows) step.expandByPoint(to);
+    const stepSize = step.isEmpty() ? 0 : step.getSize(new Vector3()).length();
+    let frame = all;
+    if (!step.isEmpty() && all.getSize(new Vector3()).length() > Math.max(0.14, stepSize * 3)) {
+      frame = step.clone().expandByScalar(Math.max(0.02, stepSize * 0.25));
     }
-    const all = kit.steps.flat().map((b) => this.kitRec(b)).filter((r): r is Placed => !!r);
-    for (const rec of all) {
-      this.placedCenter(rec, this.v1);
-      min.min(this.v1);
-      max.max(this.v1);
+    const image = art.renderIso(model, W - 60, areaH, frame);
+    ctx.drawImage(image, 30, top);
+    // Dashed arrows from each lifted part down to its spot.
+    ctx.strokeStyle = ink;
+    ctx.fillStyle = ink;
+    ctx.lineWidth = 5;
+    for (const [from, to] of arrows.slice(0, 10)) {
+      const [x0, y0] = art.project(from);
+      const [x1, y1] = art.project(to);
+      const len = Math.hypot(x1 - x0, y1 - y0);
+      if (len < 18) continue;
+      const ax = 30 + x0;
+      const ay = top + y0;
+      const bx2 = 30 + x1;
+      const by2 = top + y1;
+      const ux = (bx2 - ax) / len;
+      const uy = (by2 - ay) / len;
+      ctx.setLineDash([12, 9]);
+      ctx.beginPath();
+      ctx.moveTo(ax, ay);
+      ctx.lineTo(bx2 - ux * 18, by2 - uy * 18);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.beginPath();
+      ctx.moveTo(bx2, by2);
+      ctx.lineTo(bx2 - ux * 24 - uy * 13, by2 - uy * 24 + ux * 13);
+      ctx.lineTo(bx2 - ux * 24 + uy * 13, by2 - uy * 24 - ux * 13);
+      ctx.closePath();
+      ctx.fill();
     }
-    const size = Math.max(max.x - min.x, max.y - min.y, max.z - min.z, 0.02) + dims.pitch * 2;
-    const areaH = p.h - 2 * MARGIN - 0.028 - 0.07 - 0.035;
-    const fit = Math.min(areaH, p.w - 2 * MARGIN) * 0.85;
-    const holder = new Object3D();
-    holder.position.set(0, -p.h / 2 + MARGIN + 0.035 + areaH / 2 - 0.01, 0.06);
-    holder.rotation.set(0.5, 0, 0);
-    this.addContent(p, holder);
-    const spin = new Object3D();
-    holder.add(spin);
-    const model = new Object3D();
-    model.scale.setScalar(fit / size);
-    model.position.set(-((min.x + max.x) / 2) * (fit / size), -((min.y + max.y) / 2) * (fit / size), -((min.z + max.z) / 2) * (fit / size));
-    spin.add(model);
-    for (const { rec, current } of recs) {
-      const mesh = new Mesh(this.lib.geometries[rec.part], this.matFor(rec.finish, rec.color));
-      this.localMatrix(rec, mesh.matrix);
-      mesh.matrix.decompose(mesh.position, mesh.quaternion, mesh.scale);
-      model.add(mesh);
-      if (current) {
-        const lines = new LineSegments(this.edgeGeo(rec.part), this.stepLineMat);
-        lines.position.copy(mesh.position);
-        lines.quaternion.copy(mesh.quaternion);
-        lines.scale.setScalar(1.02);
-        model.add(lines);
+    this.pageTex!.needsUpdate = true;
+    this.redrawUi((u) => u.id.startsWith('man:'));
+  }
+
+  /** A part drawn manual-style: flat shaded with a bold outline. */
+  private addInked(group: Group, part: number, color: number, m: Matrix4): Mesh {
+    const mesh = new Mesh(this.lib.geometries[part], this.toonMat(color));
+    let lines = this.inkGeos.get(part);
+    if (!lines) {
+      lines = new LineSegmentsGeometry().fromEdgesGeometry(this.edgeGeo(part) as EdgesGeometry);
+      this.inkGeos.set(part, lines);
+    }
+    const ink = new LineSegments2(lines, this.isDark(color) ? this.inkLightMat : this.inkMat);
+    for (const o of [mesh, ink]) {
+      o.matrixAutoUpdate = false;
+      o.matrix.copy(m);
+      group.add(o);
+    }
+    return mesh;
+  }
+
+  /** A part on its own for manual callouts. */
+  private partThumb(part: number, color: number): HTMLCanvasElement {
+    const key = `${part}:${color}`;
+    let c = this.thumbs.get(key);
+    if (!c) {
+      const g = new Group();
+      this.addInked(g, part, color, new Matrix4());
+      c = this.manualArt!.renderIso(g, 200, 160);
+      this.thumbs.set(key, c);
+    }
+    return c;
+  }
+
+  private isDark(color: number): boolean {
+    const c = this.colors[color];
+    return 0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b < 0.04;
+  }
+
+  /** Cel-shaded block color for manual pages: three flat tones, printed details kept. */
+  private toonMat(color: number): Material {
+    let m = this.toonMats.get(color);
+    if (!m) {
+      if (!this.toonRamp) {
+        this.toonRamp = new DataTexture(new Uint8Array([120, 190, 255]), 3, 1, RedFormat);
+        this.toonRamp.minFilter = this.toonRamp.magFilter = NearestFilter;
+        this.toonRamp.needsUpdate = true;
       }
+      const see = this.isSeeThrough(0, color);
+      // Near-black prints as dark grey, like booklets do, so its shape still reads.
+      const c = this.isDark(color) ? new Color(0.07, 0.075, 0.085) : this.colors[color];
+      m = patchBlockShader(new MeshToonMaterial({ color: c, gradientMap: this.toonRamp, transparent: see, opacity: see ? 0.5 : 1, depthWrite: !see }));
+      this.toonMats.set(color, m);
     }
-    this.mini = spin;
-    this.redrawUi((u) => u.id.startsWith('man:') && !u.id.startsWith('man:count'));
+    return m;
   }
 
   // ---- shelf
@@ -3898,8 +4055,8 @@ export class StackerSystem extends createSystem({}) {
     tray.name = 'KitShelf';
     tray.receiveShadow = true;
     this.shelf = this.track(this.world.createTransformEntity(tray));
-    const bar = new Mesh(new CapsuleGeometry(0.009, 0.12, 4, 10).rotateZ(Math.PI / 2), new MeshStandardMaterial({ color: 0xf1f5f9, roughness: 0.3 }));
-    bar.position.set(0, -0.004, SHELF_D / 2 + 0.02);
+    const bar = new Mesh(new CapsuleGeometry(0.005, 0.08, 4, 10).rotateZ(Math.PI / 2), new MeshStandardMaterial({ color: 0xe2e8f0, roughness: 0.4 }));
+    bar.position.set(0, -0.004, SHELF_D / 2 + 0.014);
     this.shelfParts = [this.child(this.shelf, bar)];
     this.shelfBar = bar;
     this.shelfCanvas = document.createElement('canvas');
@@ -4025,8 +4182,8 @@ export class StackerSystem extends createSystem({}) {
       side.position.set((x * (RACK_W - 0.008)) / 2, RACK_TIER - 0.005, 0);
       parts.push(side);
     }
-    const bar = new Mesh(new CapsuleGeometry(0.009, 0.14, 4, 10).rotateZ(Math.PI / 2), new MeshStandardMaterial({ color: 0xf1f5f9, roughness: 0.3 }));
-    bar.position.set(0, -0.012, RACK_D / 2 + 0.02);
+    const bar = new Mesh(new CapsuleGeometry(0.005, 0.09, 4, 10).rotateZ(Math.PI / 2), new MeshStandardMaterial({ color: 0xe2e8f0, roughness: 0.4 }));
+    bar.position.set(0, -0.01, RACK_D / 2 + 0.014);
     this.rackBar = bar;
     for (const m of [shelf, back, ...parts, bar]) this.child(this.rack, m);
     // Boxes: first half on the bottom shelf, the rest on top, centered in each row.

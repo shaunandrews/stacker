@@ -130,6 +130,8 @@ In any tool, grabbing a selected block carries the whole selection, keeping its 
 
 ## Platform, panels, shelf
 
+Handles are small and translucent (55%) until a hand points at one. Platform edge and corner handles yield to blocks: a block within 1.2 cm (near) or 3 cm (by ray) wins the grab.
+
 - **Edge bars** attach the platform rigidly to your hand (6DoF), so you can move and tilt it. If released within 7° of level, it eases back to level.
 - **Corner handles** move two edges in whole studs, 4–64 per side, never shrinking past what's built. The opposite corner stays put.
 - **Size slider** scales the platform (and loose blocks) around the plate center, 0.75×–3×. Handles counter-scale so they stay the same size in your hand.
