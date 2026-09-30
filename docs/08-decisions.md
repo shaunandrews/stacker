@@ -64,3 +64,6 @@ The procedural environments (gradient spheres and glowing panels) gave plastic f
 
 ### Occlusion baked per part and voxelized between parts (Sept 2026)
 SSAO needs a depth pre-pass and post-processing, which multiview WebXR can't afford. Occlusion splits cleanly instead: inside a part it never changes, so it's baked per vertex in the pipeline (free at runtime, stored in a spare byte); between parts, the build is already a grid of studs and plates, so a small occupancy texture sampled along the normal gives soft Minecraft-style contact shadows, updated only when the build changes.
+
+### A catalog page in the same app, editing through the dev server (Sept 2026)
+Auditing parts, colors and kit steps needs the real geometry and the real manual renderer, so the catalog is a second Vite page (`catalog.html`) that imports the app's own modules instead of a separate tool. Edits go through a small dev-server plugin (`catalog-api.ts`, local requests only) that writes the source files in `tools/` and reruns the pipeline, so every change shows in `git diff`; the deployed copy is read-only. Kit step edits are stored as regroupings of model-file indices (`tools/kit-edits/`) rather than hand-edited kit JSON, so rebuilding a kit doesn't lose them.

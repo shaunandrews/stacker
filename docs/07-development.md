@@ -22,6 +22,10 @@ IWSDK specifics worth knowing (full detail in `app/AGENTS.md`):
 - Import Three.js from `@iwsdk/core`, never from `three` (addons like `RoundedBoxGeometry` are the exception)
 - Create objects with `world.createTransformEntity(...)`, never `scene.add()`
 
+## The catalog
+
+`https://localhost:3129/catalog.html` on the dev server: every part, color, finish and kit, with audit checks and review marks (see [05](05-kits.md#auditing-kits-the-catalog)). It loads the app's own modules and data, so there's nothing to build. Edits (part names and tabs, kit steps, ✓ / ⚑ marks) save through `catalog-api.ts`, which only answers requests from this machine and writes files in `tools/` and `app/public/`; review the result with `git diff`. The deployed copy is read-only.
+
 ## Test in the emulator
 
 The emulator is driven by the IWSDK CLI (`npx iwsdk xr …`, `npx iwsdk ecs …`, `npx iwsdk browser …`). Stacker adds a dev-only handle, `window.stacker`, so tests can read and call into the app.

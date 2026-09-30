@@ -34,3 +34,4 @@ Working prototype, tested in the IWSDK Quest 3 emulator and by hand on device:
 - Undo/redo (50 steps); confirm taps on Clear, Stress and starting a kit over a build
 - Seven kits (House, Go-Kart, Robot, Sea Plane, Turbo Prop, Pizza To Go, Fire Station) on a rack of 3D boxes: grab one, review it, tear the strip to start; built sub-assembly by sub-assembly; ghost guidance, a parts shelf, and a booklet-style manual (flat isometric, outlines, arrows, zoom)
 - Autosave plus 6 save slots
+- **Catalog** (`catalog.html`): browse and audit every part, color, finish and kit; kit steps show where they came from (model file or generated) and which pieces float; step edits on the dev server

@@ -9,7 +9,7 @@ Stacker lives at the repo root with three parts:
 
 | Path | What |
 |---|---|
-| `app/` | The app: an IWSDK (WebXR + Three.js) project. Nearly all behavior is in `app/src/stacker-system.ts`; parts loading in `blocks.ts`; styles, finishes and environments in `look.ts` |
+| `app/` | The app: an IWSDK (WebXR + Three.js) project. Nearly all behavior is in `app/src/stacker-system.ts`; parts loading in `blocks.ts`; styles, finishes and environments in `look.ts`; kits list in `kits.ts`; manual pages in `manual.ts`. `catalog.html` + `src/catalog/` is the parts/kits audit page (edits via `catalog-api.ts` on the dev server) |
 | `tools/` | Offline data pipeline: LDraw + Rebrickable → `app/public/parts/*`, LDraw models → `app/public/kits/*` |
 | `docs/` | Detailed docs — read `docs/README.md` first; `02-architecture.md` and `03-interaction.md` before touching the system |
 
@@ -51,7 +51,7 @@ node tools/build-parts.mjs
 python3 tools/build-kit.py build data-src/<set>.mpd <Title> <set>
 ```
 
-Then add new kits to `KITS` in `stacker-system.ts`. See `docs/04-parts-pipeline.md` and `docs/05-kits.md`.
+Then add new kits to `KITS` in `app/src/kits.ts`, and check their steps in the catalog. See `docs/04-parts-pipeline.md` and `docs/05-kits.md`.
 
 ## Git
 

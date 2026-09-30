@@ -27,16 +27,22 @@ stacker/
 │   ├── special-parts.json  ← Special/Windows tab parts and joint mounts (hinges, panes, shutters)
 │   ├── hinges.json         ← pivot, axis and range for parts that swing
 │   ├── kit-parts.json      ← extra parts/colors the kits need (generated)
+│   ├── kit-edits/          ← step regroupings saved from the catalog (applied by build-kit.py)
 │   └── minifigs.json       ← minifig part overrides, presets, assembly offsets
 ├── data-src/               ← downloads (LDraw library, Rebrickable CSVs, .mpd models) — not in git
 └── app/                    ← the app (an IWSDK project)
     ├── iwsdk.config.json   ← project authority: XR mode, features, scene
+    ├── catalog.html        ← the catalog: browse and audit parts, colors, finishes, kits
+    ├── catalog-api.ts      ← dev-server API behind the catalog's edits (never in the build)
     ├── src/
     │   ├── index.ts        ← World.create() + registers StackerSystem
     │   ├── stacker-system.ts ← all app behavior (one ECS system)
     │   ├── blocks.ts       ← part library loader, geometry decode (AO, stud-logo UVs), units
     │   ├── look.ts         ← finishes, block shader patch (occlusion, micro-surface, logo), environments, presets
     │   ├── kit-boxes.ts    ← kit boxes (faces, tear strip) and ArtRenderer (box art, manual pages)
+    │   ├── kits.ts         ← KITS list, kit block format, kit piece → matrix
+    │   ├── manual.ts       ← ManualPainter: draws manual pages (the headset and the catalog)
+    │   ├── catalog/        ← the catalog page's views, audit checks and viewers
     │   ├── desktop.ts      ← mouse + keyboard input for the desktop view
     │   ├── splash.ts       ← loading progress on the splash screen
     │   ├── components.ts   ← (empty) ECS component manifest
@@ -44,6 +50,7 @@ stacker/
     ├── public/
     │   ├── parts/          ← parts.json, parts.bin, colors.json, minifigs.json
     │   ├── kits/           ← one JSON per kit
+    │   ├── catalog/review.json ← audit marks from the catalog (✓ / ⚑ + notes)
     │   ├── env/            ← HDRI environments (Poly Haven, CC0)
     │   ├── scenes/main.iwsdk.scene.json ← only the IBL "room" environment
     │   └── CREDITS.txt

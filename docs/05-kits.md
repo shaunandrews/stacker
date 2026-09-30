@@ -35,14 +35,27 @@ python3 tools/build-kit.py build data-src/6400-1.mpd Go-Kart 6400-1
    - **Free** otherwise → `{ m: [R (9), T (3)] }` in LDU, model space
 5. **Steps:** in the model's own order. Each sub-model that's an assembly of its own (it has `STEP`s, or more than 3 parts: a vehicle, a minifig) is built in its own steps where the model lists it, before its parent carries on; `STEP`s anywhere advance the step. Any step over 6 parts, and any model with no steps at all, is broken up bottom-up, 3–5 parts a step with small layers merged. So the Fire Station builds the ladder truck, then the chief's car, then the building, then the firefighters.
 
+### Where the steps come from
+
+The models are fan-made (OMR), not LEGO's booklets, so a kit's steps are only as good as what the modeller marked plus what the converter makes up. Each step records its `origin`:
+
+| Origin | Meaning |
+|---|---|
+| `file` | Marked with `STEP` in the model file and kept as is |
+| `auto` | Split bottom-up by `layered()` (steps over 6 parts, or models with no steps). It sorts by height and doesn't know what holds what, so a part can land a step before what it hangs from |
+| `edit` | Regrouped in the catalog and saved to `tools/kit-edits/<id>.json` |
+
+Every piece keeps `k`, its index in the model file. Catalog edits are stored as lists of `k`, so rebuilding a kit keeps them; pieces an edit doesn't mention (the model changed) go in a last step.
+
 ### Kit JSON
 
 ```json
 { "id": "6400-1", "title": "Go-Kart", "pieces": 29,
   "steps": [
-    [ { "part": "6157", "color": 0, "i": -2, "j": 1, "level": 0, "turns": 2, "fw": 4, "fd": 2 },
-      { "part": "30028", "color": 256, "m": [1,0,0, 0,1,0, 0,0,1, -42,9,-40] } ]
-  ] }
+    [ { "part": "6157", "color": 0, "k": 0, "i": -2, "j": 1, "level": 0, "turns": 2, "fw": 4, "fd": 2 },
+      { "part": "30028", "color": 256, "k": 7, "m": [1,0,0, 0,1,0, 0,0,1, -42,9,-40] } ]
+  ],
+  "origin": ["file"] }
 ```
 
 ## Kit boxes
@@ -105,11 +118,21 @@ The magnet stays on in every mode, so free parts can still be placed.
 - The model built so far, flat and isometric: cel-shaded colors (three tones) with bold outlines (fat lines from each part's edges); near-black parts print dark grey with lighter outlines
 - This step's parts float just above their spots along their own up axis, with dashed arrows down into place
 - Small models are framed whole; once the model is much bigger than the step, the view zooms to the step's parts
-- Pages are rendered by the same throwaway WebGL context as the box art (`ArtRenderer.renderIso`), kept while the manual is open
+- Pages are drawn by `ManualPainter` (`manual.ts`) in the same throwaway WebGL context as the box art (`ArtRenderer.renderIso`), kept while the manual is open. The catalog uses the same painter, so what you audit there is what the headset shows
 - **−/+** zoom the page in on the step's parts (1×, 1.7×, 2.8×, 4.5×); line weight follows how big a stud is drawn, bold up close and fine when everything's small. Pages render at 2048 px wide.
 - ◀ / ▶ page freely; the middle button jumps back to the step you're on; it follows along automatically when you complete a step
 
 Large sets with steps spread across the model (Fire Station) still render small; the pages are only as good as the model's authored steps.
+
+## Auditing kits (the catalog)
+
+`catalog.html` (<https://stacker.view.fast/catalog.html>, or `/catalog.html` on the dev server) opens any kit step by step: the manual page, a 3D view, and what holds each piece when its step is built:
+
+- **On the plate / On studs**: fine
+- **Touching only**: attached some other way (hinges, clips, wheels on pins), amber in 3D
+- **Floating**: nothing holds it yet, what it rests on comes in a later step, red in 3D. These are the steps that look wrong
+
+On the dev server you can tick pieces and move them to the previous or next step, split a step, merge it with the next, or move it; **Save** writes `tools/kit-edits/<id>.json` and reruns `build-kit.py` (needs `data-src/<id>.mpd`). **Reset to generated** drops the edits. ✓ / ⚑ marks go to `app/public/catalog/review.json`.
 
 ## Adding a kit
 
@@ -117,6 +140,6 @@ Large sets with steps spread across the model (Fire Station) still render small;
 2. Download the `.mpd` into `data-src/`
 3. `python3 tools/build-kit.py collect data-src/*.mpd` → then rebuild colors and parts (new parts go to the More tab)
 4. `python3 tools/build-kit.py build data-src/<set>.mpd <Title> <set>`
-5. Add `{ id, title, pieces, color }` to `KITS` in `stacker-system.ts` (its box appears on the rack)
-6. Test: `await s.startKit('<set>', '<Title>')` in the emulator, skip through, confirm the piece count; `python3 dev/tests/test_boxes.py` for the box flow
+5. Add `{ id, title, pieces, color }` to `KITS` in `kits.ts` (its box appears on the rack)
+6. Test: `await s.startKit('<set>', '<Title>')` in the emulator, skip through, confirm the piece count; `python3 dev/tests/test_boxes.py` for the box flow. Then open it in the catalog and fix any floating steps
 7. Logo-printed parts: map them to their plain version in `PLAIN` in `build-kit.py`
