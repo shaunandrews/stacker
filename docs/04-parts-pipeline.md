@@ -62,8 +62,9 @@ For each part:
 4. **Colors.** Color 16 (and edge color 24) inherit the main color; anything else is a fixed color baked per vertex.
 5. **Footprint & height.** From the bounding box: `w = x-extent / 20`, `d = z-extent / 20` studs; top = 0 unless the part starts above its stud (then the nearest 4 LDU); `h = (bottom − top) / 4` half plates. Overrides from `minifigs.json` pin minifig parts to 2×1 with exact heights.
 6. **Axes.** LDraw is −Y up; rotate 180° about X (`y → −y, z → −z`) into three.js axes, and center the geometry on its footprint and height.
-7. **Normals.** Face normals smoothed across welded positions with a 35° crease angle.
-8. **Pack.** Weld to indexed vertices; quantize.
+7. **Bevel** (`bevel.mjs`). LDraw edges are perfectly sharp, which reads as cheap. Positions are welded, T-junctions split (so edges on both sides of a crease line up), and every hard convex edge (two faces folded past 35°) is chamfered by 0.5 LDU (0.2 mm): each face is inset away from the edge, a strip bridges the gap, and small fills close corners. The strip's normals blend from one face to the other, so one flat strip shades like a rounded edge. Smooth normals use the same 35° crease angle. `BEVEL_STATS=3001,3003 node tools/build-parts.mjs` prints per-part counts.
+8. **Seams.** Outer walls at the footprint edge move in 0.3 LDU (0.12 mm; a multiple of the 0.1 LDU storage grid, so both sides round alike), like real bricks (7.8 mm on an 8 mm pitch). Parts with a pinned footprint (minifigs) are left alone.
+9. **Pack.** Weld to indexed vertices; quantize.
 
 ### `parts.bin` layout (per part, 4-byte aligned)
 
@@ -84,7 +85,7 @@ For each part:
   "offset": 0, "vertices": 412, "indices": 1236 }
 ```
 
-Current output: 177 parts, ~1.2 MB binary, ~430 triangles per part on average.
+Current output: 199 parts, ~1.8 MB binary, ~760 triangles per part on average (~420 before bevels; a 2×2 brick is 220 → 400, most of it stud rims).
 
 ## 4. Runtime decode (`blocks.ts`)
 

@@ -13,6 +13,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { bevel } from './bevel.mjs';
 
 const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
 const LDRAW = path.join(ROOT, 'data-src/ldraw');
@@ -22,6 +23,8 @@ const extra = JSON.parse(fs.readFileSync(path.join(ROOT, 'tools/kit-parts.json')
 const minifig = JSON.parse(fs.readFileSync(path.join(ROOT, 'tools/minifigs.json'), 'utf8'));
 const special = JSON.parse(fs.readFileSync(path.join(ROOT, 'tools/special-parts.json'), 'utf8'));
 const UNIT = 4; // LDU per height step (half a plate)
+const BEVEL = 0.5; // LDU chamfer on hard convex edges (0.2 mm)
+const SEAM = 0.3; // LDU each outer wall moves in (0.12 mm; a multiple of the 0.1 LDU storage grid, so both sides match)
 
 // LDraw color table, for parts with fixed-color regions (printed faces, yellow hands).
 const ldColors = new Map();
@@ -146,7 +149,6 @@ function flatten(name, M, invert, tris, color = 16, studs = null) {
 }
 
 // ---- build ----
-const CREASE = Math.cos((35 * Math.PI) / 180);
 const meta = [];
 const chunks = [];
 let offset = 0;
@@ -184,51 +186,36 @@ for (const part of parts) {
     const hex = ldColors.get(code) ?? 'ff00ff';
     return [parseInt(hex.slice(0, 2), 16), parseInt(hex.slice(2, 4), 16), parseInt(hex.slice(4, 6), 16), 255];
   };
-  // Face normals, then crease-angle smoothing over welded positions.
-  const key = ([x, y, z]) => `${Math.round(x * 20)},${Math.round(y * 20)},${Math.round(z * 20)}`;
-  const fn = faces.map(([a, b, c]) => {
-    const u = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
-    const v = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
-    const n = [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]];
-    const l = Math.hypot(...n) || 1;
-    return [n[0] / l, n[1] / l, n[2] / l];
-  });
-  const byPos = new Map();
-  faces.forEach((f, i) => f.forEach((p) => {
-    const k = key(p);
-    if (!byPos.has(k)) byPos.set(k, []);
-    byPos.get(k).push(i);
-  }));
+  // Bevel hard edges (smooth normals come with it), then pull the outer walls in so
+  // neighbouring bricks leave a hairline seam, like real ones (7.8 mm on an 8 mm pitch).
+  const beveled = bevel(faces, tris.map((t) => t.color), { size: BEVEL });
+  if (process.env.BEVEL_STATS?.split(',').includes(part.id)) console.log(part.id, beveled.stats);
+  const seamX = part.w ? Infinity : w * 10;
+  const seamZ = part.d ? Infinity : d * 10;
+  const inset = (v, edge) => (Math.abs(Math.abs(v) - edge) < 0.05 ? v - Math.sign(v) * SEAM : v);
+  const key = ([x, y, z]) => `${Math.round(x * 10)},${Math.round(y * 10)},${Math.round(z * 10)}`;
   const verts = new Map();
   const pos = [];
   const nor = [];
   const col = [];
   const idx = [];
-  faces.forEach((f, i) => {
-    const n0 = fn[i];
-    const c = tris[i].color === 16 ? [0, 0, 0, 0] : rgb(tris[i].color);
-    for (const p of f) {
-      const n = [0, 0, 0];
-      for (const j of byPos.get(key(p))) {
-        const m = fn[j];
-        if (m[0] * n0[0] + m[1] * n0[1] + m[2] * n0[2] >= CREASE) {
-          n[0] += m[0]; n[1] += m[1]; n[2] += m[2];
-        }
-      }
-      const l = Math.hypot(...n) || 1;
-      const q = [Math.round((n[0] / l) * 127), Math.round((n[1] / l) * 127), Math.round((n[2] / l) * 127)];
-      const vk = `${key(p)}|${q}|${c}`;
+  for (const tri of beveled.tris) {
+    for (const { p: q, n, c: code } of tri) {
+      const p = [inset(q[0], seamX), q[1], inset(q[2], seamZ)];
+      const c = code === 16 ? [0, 0, 0, 0] : rgb(code);
+      const qn = [Math.round(n[0] * 127), Math.round(n[1] * 127), Math.round(n[2] * 127)];
+      const vk = `${key(p)}|${qn}|${c}`;
       let vi = verts.get(vk);
       if (vi === undefined) {
         vi = pos.length / 3;
         verts.set(vk, vi);
         pos.push(Math.round(p[0] * 10), Math.round(p[1] * 10), Math.round(p[2] * 10));
-        nor.push(...q);
+        nor.push(...qn);
         col.push(...c);
       }
       idx.push(vi);
     }
-  });
+  }
   const vcount = pos.length / 3;
   if (vcount > 65535) {
     console.warn('skip (too big)', part.id, vcount);
