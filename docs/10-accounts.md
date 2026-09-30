@@ -45,12 +45,7 @@ These need a real Space (a throwaway one, not the Stacker Space):
 3. **Google sign-in inside the Quest browser**, and the guest-to-account upgrade
 4. **Hosted payload limits** (socket frame, body, response) and whether `req.text()` is slow there too
 
-### Worth reporting to Spacefast
-
-- `req.text()` / `req.json()` are quadratic in the local runtime
-- Returning a ~900 KB response aborts the runtime (`Assertion failed: list_empty(&rt->gc_obj_list)`)
-- A large mutation fails with "Zero realtime connection closed before the request completed" instead of a size error
-- The scaffolded `AGENTS.md` says fields are only `string()`, `boolean()`, `id()` and there's no outbound `fetch`; the SDK README (same version) documents `number()`, `userId()` and `fetch`
+Rough edges found along the way are collected locally for review (`spikes/zero-accounts/FEEDBACK.md`, git-ignored) and haven't been reported yet.
 
 ## Architecture that falls out
 
