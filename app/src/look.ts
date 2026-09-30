@@ -135,16 +135,23 @@ vec3 outgoingLight = totalDiffuse * diffuseColor.a * 0.55 + totalSpecular + tota
 }
 
 // ============================================================ environments
-// Reflection environments, rendered into a PMREM once when chosen.
+// Reflection environments. Most are real HDRIs (Poly Haven, CC0, 1k) from public/env/,
+// PMREM'd once when first chosen; the procedural scene of the same id shows until the
+// file has loaded (and is what night and overcast always are).
 
-export const ENVS = [
-  { id: 'room', label: 'Room' },
-  { id: 'studio', label: 'Studio' },
-  { id: 'sky', label: 'Sky' },
-  { id: 'sunset', label: 'Sunset' },
+export const ENVS: Array<{ id: string; label: string; hdr?: string }> = [
+  { id: 'interior', label: 'Interior', hdr: 'photo_studio_loft_hall' },
+  { id: 'studio', label: 'Studio', hdr: 'studio_small_09' },
+  { id: 'sky', label: 'Daylight', hdr: 'kloofendal_48d_partly_cloudy_puresky' },
+  { id: 'sunset', label: 'Sunset', hdr: 'venice_sunset' },
   { id: 'night', label: 'Night' },
   { id: 'overcast', label: 'Overcast' },
 ];
+
+/** Environment ids from older saves. */
+export function envId(id: string): string {
+  return id === 'room' ? 'interior' : ENVS.some((e) => e.id === id) ? id : 'interior';
+}
 
 function gradientSphere(zenith: string, horizon: string, ground: string, radius = 50): Mesh {
   const geo = new SphereGeometry(radius, 32, 16);
@@ -178,7 +185,7 @@ function glowBall(color: string, power: number, r: number, x: number, y: number,
 }
 
 export function makeEnvScene(id: string): Scene {
-  if (id === 'room') return new RoomEnvironment() as unknown as Scene;
+  if (id === 'room' || id === 'interior') return new RoomEnvironment() as unknown as Scene;
   const s = new Scene();
   switch (id) {
     case 'studio':
@@ -231,8 +238,8 @@ export interface Style {
 export const STYLES: Style[] = [
   {
     name: 'Daylight',
-    env: 'room',
-    envStrength: 0.45,
+    env: 'interior',
+    envStrength: 0.55,
     envTurn: 0,
     backdrop: ['#bcd4ee', '#d8d2c8'],
     backdropAmount: 0,
@@ -262,7 +269,7 @@ export const STYLES: Style[] = [
   {
     name: 'Golden Hour',
     env: 'sunset',
-    envStrength: 0.5,
+    envStrength: 0.45,
     envTurn: 0,
     backdrop: ['#ffb36b', '#3a2a4a'],
     backdropAmount: 0.35,
@@ -277,7 +284,7 @@ export const STYLES: Style[] = [
   {
     name: 'Studio',
     env: 'studio',
-    envStrength: 0.6,
+    envStrength: 0.45,
     envTurn: 0,
     backdrop: ['#1b1d24', '#07080b'],
     backdropAmount: 0.92,

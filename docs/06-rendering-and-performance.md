@@ -49,7 +49,7 @@ Parts are bevelled in the pipeline (0.2 mm chamfer on hard convex edges, normals
 
 ## Lighting
 
-- **Environment:** a PMREM of the preset's environment scene (`makeEnvScene`). Its strength is `scene.environmentIntensity` — three ignores `material.envMapIntensity` when the map comes from `scene.environment`, so that's the only dial that works. Keep it well below the key light (0.45–0.7): at 0.9+ it floods every face equally and the build reads flat, with invisible shadows
+- **Environment:** real HDRIs from Poly Haven (CC0, 1k `.hdr`, ~1.5 MB each, in `app/public/env/`): Interior (`photo_studio_loft_hall`), Studio (`studio_small_09`), Daylight (`kloofendal_48d_partly_cloudy_puresky`), Sunset (`venice_sunset`). Loaded with `HDRLoader` only when chosen, PMREM'd once (`fromEquirectangular`) and cached; the procedural scene of the same id (`makeEnvScene`) shows until the file is in. Night and Overcast stay procedural. Older saves' `room` maps to Interior. Its strength is `scene.environmentIntensity` — three ignores `material.envMapIntensity` when the map comes from `scene.environment`, so that's the only dial that works. Keep it well below the key light (0.45–0.7): at 0.9+ it floods every face equally and the build reads flat, with invisible shadows
 - **Key light:** one `DirectionalLight`, orbiting the plate center by azimuth/height and following the platform
 - **Shadows:** PCF. The shadow camera is fitted to the plate each time the light or plate changes (`fitShadow`), and the map is sized so the chosen softness is ≤ 4 texels of blur (512–2048²). `shadowMap.autoUpdate` is off: the map redraws only after a change, or while something is held, snapping or being dropped
 - **Fill:** `HemisphereLight`

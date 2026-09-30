@@ -52,7 +52,8 @@ import { dims, isSymmetric, Library, studGeometry, TABS } from './blocks.js';
 import { DesktopControls } from './desktop.js';
 import { ArtRenderer, KitBox, TEAR_PULL } from './kit-boxes.js';
 import type { ArtPiece, KitInfo } from './kit-boxes.js';
-import { ENVS, finishIndex, FINISHES, makeBackdrop, makeEnvScene, makeFinish, paintBackdrop, patchBlockShader, STYLES } from './look.js';
+import { HDRLoader } from 'three/examples/jsm/loaders/HDRLoader.js';
+import { envId, ENVS, finishIndex, FINISHES, makeBackdrop, makeEnvScene, makeFinish, paintBackdrop, patchBlockShader, STYLES } from './look.js';
 import { progress } from './splash.js';
 
 // ---- Platform (world meters ÷ the Size scale = platform-local units) ----
@@ -409,9 +410,10 @@ export class StackerSystem extends createSystem({}) {
   private style = 0;
   private advanced = false; // settings panel shows environment, tone and sliders
   private shadowDirty = true; // shadow map needs a redraw
-  private envId = 'room';
+  private envId = 'interior';
   private envTex: Texture | null = null;
   private envCache = new Map<string, Texture>();
+  private envLoading = new Set<string>();
   private backdrop!: Mesh;
   private plateMat!: MeshStandardMaterial;
   private handleMat!: MeshStandardMaterial;
@@ -838,17 +840,43 @@ export class StackerSystem extends createSystem({}) {
   }
 
   private setEnv(id: string): void {
+    id = envId(id);
     this.envId = id;
-    let tex = this.envCache.get(id);
+    const env = ENVS.find((e) => e.id === id)!;
+    // The HDRI once it's in; until then (or for procedural envs) the scene of the same id.
+    let tex = this.envCache.get(id) ?? this.envCache.get(`${id}:procedural`);
     if (!tex) {
       const pmrem = new PMREMGenerator(this.renderer);
       tex = pmrem.fromScene(makeEnvScene(id), 0.04).texture;
       pmrem.dispose();
-      this.envCache.set(id, tex);
+      this.envCache.set(env.hdr ? `${id}:procedural` : id, tex);
     }
     this.envTex = tex;
     this.scene.environment = tex;
     this.visualDirty = true;
+    if (env.hdr && !this.envCache.has(id) && !this.envLoading.has(id)) {
+      this.envLoading.add(id);
+      new HDRLoader().load(
+        `${import.meta.env.BASE_URL}env/${env.hdr}.hdr`,
+        (hdr) => {
+          const pmrem = new PMREMGenerator(this.renderer);
+          const t = pmrem.fromEquirectangular(hdr).texture;
+          pmrem.dispose();
+          hdr.dispose();
+          this.envLoading.delete(id);
+          this.envCache.set(id, t);
+          if (this.envId === id) {
+            this.envTex = t;
+            this.scene.environment = t;
+          }
+        },
+        undefined,
+        (err) => {
+          this.envLoading.delete(id);
+          console.warn(`Environment ${env.hdr} failed to load`, err);
+        },
+      );
+    }
   }
 
   /** Push the style plus slider tweaks into lights, environment, backdrop, plate and renderer. */

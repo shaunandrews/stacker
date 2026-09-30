@@ -58,3 +58,6 @@ The page used to open straight into a black canvas. A splash (in `index.html`, s
 
 ### Bevels baked in the pipeline, not a shader
 Edge highlights carry the LEGO look. Chamfering hard edges at build time costs triangles (~1.8×) but no per-pixel work, and works on any LDraw part. Screen-space tricks (SSAO, edge detection) don't fit multiview WebXR.
+
+### Real HDRIs for reflections (Sept 2026)
+The procedural environments (gradient spheres and glowing panels) gave plastic flat, fake reflections. Real CC0 HDRIs put believable windows and falloff into every highlight for ~1.5 MB each, loaded only when chosen. 1k is enough — reflections are blurred by roughness anyway — and 2k would be ~6 MB each.

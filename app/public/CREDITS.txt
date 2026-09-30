@@ -6,3 +6,6 @@ Stacker uses:
 - The "House" kit is LDraw OMR model 7796-1 by Merlijn Wissink, redistributable under CCAL 2.0
 
 LEGO® is a trademark of the LEGO Group, which does not sponsor, authorize or endorse this project.
+
+Environment maps (app/public/env/*.hdr) are from Poly Haven (https://polyhaven.com), CC0:
+photo_studio_loft_hall, studio_small_09, kloofendal_48d_partly_cloudy_puresky, venice_sunset.
