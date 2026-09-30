@@ -7,6 +7,11 @@ Sub-models are flattened. Upright, grid-aligned parts become lattice blocks
 (i, j, level, turns); anything else (wheels, arms, hinged bits) is stored as a
 free transform and snaps into place by its ghost. Authored STEPs are kept;
 models without them are stepped bottom-up.
+
+Every piece keeps `k`, its index in the model file, so step edits made in the
+catalog (tools/kit-edits/<id>.json: {"steps": [[k, ...], ...]}) survive a rebuild.
+`origin` says where each step came from: file (authored), auto (split bottom-up)
+or edit (changed in the catalog).
 """
 import csv, json, math, os, sys
 
@@ -92,6 +97,7 @@ if sys.argv[1] == 'collect':
 src, title, kit_id = sys.argv[2], sys.argv[3], sys.argv[4]
 lib = {p['id']: p for p in json.load(open('app/public/parts/parts.json'))['parts']}
 insts, nsteps = instances(src)
+for k, inst in enumerate(insts): inst['k'] = k
 blocks, missing = [], []
 # Grid origin: models aren't always authored on a whole-stud grid, so use the most
 # common stud offset among upright parts.
@@ -116,7 +122,7 @@ for inst in insts:
     wx = a*cx + b*cy + c*cz + x; wy = d*cx + e*cy + f*cz + y; wz = g*cx + h*cy + i*cz + z
     T = [wx, -wy, -wz]
     R = [a, -b, -c, -d, e, f, -g, h, i]
-    blk = {'part': inst['part'], 'color': inst['color'], 'step': inst['step'], 'h': p['h'], 'T': T, 'R': R}
+    blk = {'part': inst['part'], 'color': inst['color'], 'k': inst['k'], 'step': inst['step'], 'h': p['h'], 'T': T, 'R': R}
     # Lowest point of the part's box in model space, whatever its rotation.
     blk['low'] = T[1] - (abs(R[3]) * p['w'] * 10 + abs(R[4]) * p['h'] * UNIT / 2 + abs(R[5]) * p['d'] * 10)
     if abs(R[4] - 1) < 1e-3:
@@ -159,12 +165,31 @@ def layered(bs):
 # at a glance — or a model with no steps at all — is broken up bottom-up.
 groups = {}
 for b in blocks: groups.setdefault(b['step'], []).append(b)
-split = []
+split, origin = [], []
 for k in sorted(groups):
     g = groups[k]
-    split += [g] if len(g) <= 6 else layered(g)
+    parts = [g] if len(g) <= 6 else layered(g)
+    split += parts
+    origin += ['file' if len(g) <= 6 else 'auto'] * len(parts)
+# Step edits from the catalog replace the grouping; pieces they don't mention (the
+# model changed) go in a last step so nothing is lost.
+edits = f'tools/kit-edits/{kit_id}.json'
+if os.path.exists(edits):
+    by_k = {b['k']: b for b in blocks}
+    seen, edited = set(), []
+    for step in json.load(open(edits))['steps']:
+        s = [by_k[k] for k in step if k in by_k and k not in seen]
+        seen.update(b['k'] for b in s)
+        if s: edited.append(s)
+    rest = [b for b in blocks if b['k'] not in seen]
+    if rest:
+        edited.append(rest)
+        print(f'{kit_id}: {len(rest)} pieces not in {edits}, added as a last step')
+    # Steps the edits left alone keep saying where they came from.
+    was = {tuple(sorted(b['k'] for b in g)): o for g, o in zip(split, origin)}
+    split, origin = edited, [was.get(tuple(sorted(b['k'] for b in g)), 'edit') for g in edited]
 for s in split:
     for b in s: b.pop('step'); b.pop('bottom')
-json.dump({'id': kit_id, 'title': title, 'pieces': len(blocks), 'steps': split}, open(f'app/public/kits/{kit_id}.json', 'w'))
+json.dump({'id': kit_id, 'title': title, 'pieces': len(blocks), 'steps': split, 'origin': origin}, open(f'app/public/kits/{kit_id}.json', 'w'))
 free = sum(1 for b in blocks if 'm' in b)
 print(f'{kit_id}: {len(blocks)} parts ({free} free) in {len(split)} steps; missing {sorted(set(missing))}')
