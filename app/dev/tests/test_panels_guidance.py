@@ -11,7 +11,8 @@ def ray_press(target, b=0):
 def reset_ctrl(): cli('xr','set-transform', inp={'device':R,'orientation':{'x':0,'y':0,'z':0,'w':1}})
 cli('browser','reload'); time.sleep(6); cli('xr','enter'); time.sleep(3)
 cli('xr','set-transform', inp={'device':'headset','orientation':{'pitch':-30,'yaw':0,'roll':0}})
-js('s.exitKit(); s.clearPlaced(); s.instructions = "ghosts"; s.applyInstructions(); return 1')  # guide mode persists per device
+# Library size, guide mode and Advanced persist across reloads: start every run from the defaults.
+js('s.exitKit(); s.clearPlaced(); s.instructions = "ghosts"; s.applyInstructions(); s.advanced = false; s.layoutSettings(); s.library.w = 0.32; s.library.h = 0.52; s.sizePanel(s.library); s.layoutLibrary(); s.recenter(); return 1')
 s = probe()
 # 1. library resize: grab the corner and drag down-right
 c = s['library']['resize']; n0 = s['cellsPerPage']
