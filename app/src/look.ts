@@ -93,19 +93,38 @@ float woodGrain(vec3 p) {
  * - Clear: reflections stay at full strength while the body fades (premultiplied
  *   alpha), and edges turn more opaque at grazing angles (Fresnel).
  */
+/** Ambient occlusion strength for every block material (the Occlusion slider). */
+export const OCCLUSION = { value: 1 };
+
 export function patchBlockShader<T extends Material>(mat: T, finish = 'plastic'): T {
   const wood = finish === 'wood';
   const clear = finish === 'clear';
   if (clear) mat.premultipliedAlpha = true;
   mat.onBeforeCompile = (shader) => {
+    shader.uniforms.uOcclusion = OCCLUSION;
     shader.vertexShader = shader.vertexShader
-      .replace('#include <common>', '#include <common>\nattribute vec4 fixedColor;\nvarying vec4 vFixedColor;\nvarying vec3 vLocal;')
-      .replace('#include <begin_vertex>', '#include <begin_vertex>\nvFixedColor = fixedColor;\nvLocal = position * 1000.0;');
+      .replace(
+        '#include <common>',
+        '#include <common>\nattribute vec4 fixedColor;\nattribute float ao;\nvarying vec4 vFixedColor;\nvarying vec3 vLocal;\nvarying float vAo;',
+      )
+      .replace('#include <begin_vertex>', '#include <begin_vertex>\nvFixedColor = fixedColor;\nvLocal = position * 1000.0;\nvAo = ao;');
     let frag = shader.fragmentShader
-      .replace('#include <common>', `#include <common>\nvarying vec4 vFixedColor;\nvarying vec3 vLocal;\n${wood ? WOOD_GLSL : ''}`)
+      .replace(
+        '#include <common>',
+        `#include <common>\nvarying vec4 vFixedColor;\nvarying vec3 vLocal;\nvarying float vAo;\nuniform float uOcclusion;\n${wood ? WOOD_GLSL : ''}`,
+      )
       .replace(
         '#include <color_fragment>',
         '#include <color_fragment>\ndiffuseColor.rgb = mix(vFixedColor.rgb, diffuseColor.rgb, vFixedColor.a);',
+      )
+      // Baked occlusion: mostly the bounced light (environment, fill), a little of the key.
+      .replace(
+        '#include <lights_fragment_end>',
+        `#include <lights_fragment_end>
+float occlusion = clamp(vAo * uOcclusion, 0.0, 1.0);
+reflectedLight.indirectDiffuse *= 1.0 - occlusion;
+reflectedLight.indirectSpecular *= 1.0 - occlusion * 0.8;
+reflectedLight.directDiffuse *= 1.0 - occlusion * 0.5;`,
       );
     if (wood) {
       frag = frag

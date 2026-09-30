@@ -935,7 +935,7 @@ export class StackerSystem extends createSystem({}) {
     const rootObj = new Object3D();
     rootObj.name = 'Platform';
     this.root = this.track(this.world.createTransformEntity(rootObj));
-    this.plateMat = new MeshStandardMaterial({ color: 0x237841, roughness: 0.5 });
+    this.plateMat = patchBlockShader(new MeshStandardMaterial({ color: 0x237841, roughness: 0.5 })); // occlusion like the parts
     this.slab = new Mesh(new BoxGeometry(1, 1, 1), this.plateMat);
     this.slab.name = 'Baseplate';
     this.slab.receiveShadow = true;

@@ -47,6 +47,11 @@ Three finishes (`FINISHES` in `look.ts`), each one material per palette color fo
 
 Parts are bevelled in the pipeline (0.2 mm chamfer on hard convex edges, normals blended across the strip so it shades round) with 0.1 mm seams between neighbours — see [04](04-parts-pipeline.md). Baseplate studs use a matching 80-triangle stud with a rounded rim (`studGeometry`).
 
+## Ambient occlusion
+
+- **Baked, per part** (`bakeAO` in `build-parts.mjs`): each vertex casts 24 cosine-weighted rays up to 12 LDU against the part's own triangles (uniform grid, ~17 s for all parts); closer hits darken more. Stored in the spare 4th byte of each packed normal, so `parts.bin` doesn't grow. Darkens stud bases, bevel creases and hollows. Plate studs carry the same at their foot (`studGeometry`)
+- **Applied** in `patchBlockShader`: indirect diffuse × (1 − ao), indirect specular × (1 − 0.8 ao), direct diffuse × (1 − 0.5 ao), scaled by the shared `OCCLUSION` uniform
+
 ## Lighting
 
 - **Environment:** real HDRIs from Poly Haven (CC0, 1k `.hdr`, ~1.5 MB each, in `app/public/env/`): Interior (`photo_studio_loft_hall`), Studio (`studio_small_09`), Daylight (`kloofendal_48d_partly_cloudy_puresky`), Sunset (`venice_sunset`). Loaded with `HDRLoader` only when chosen, PMREM'd once (`fromEquirectangular`) and cached; the procedural scene of the same id (`makeEnvScene`) shows until the file is in. Night and Overcast stay procedural. Older saves' `room` maps to Interior. Its strength is `scene.environmentIntensity` — three ignores `material.envMapIntensity` when the map comes from `scene.environment`, so that's the only dial that works. Keep it well below the key light (0.45–0.7): at 0.9+ it floods every face equally and the build reads flat, with invisible shadows

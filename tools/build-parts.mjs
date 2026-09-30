@@ -154,6 +154,100 @@ function flatten(name, M, invert, tris, color = 16, studs = null) {
   return true;
 }
 
+// ---- ambient occlusion ----
+// Per-vertex occlusion from the part's own shape: short rays over the hemisphere around
+// each vertex normal, hits weighted by closeness. Darkens stud bases, creases and hollows.
+// Units are the packed ones (0.1 LDU).
+const AO_REACH = 120; // 12 LDU: a stud is 4 tall, the pitch is 20
+const AO_CELL = 60;
+const AO_DIRS = (() => {
+  // Cosine-weighted directions in a z-up frame (golden-angle spiral).
+  const n = 24;
+  const out = [];
+  for (let i = 0; i < n; i++) {
+    const r = Math.sqrt((i + 0.5) / n);
+    const a = i * 2.399963;
+    out.push([r * Math.cos(a), r * Math.sin(a), Math.sqrt(1 - r * r)]);
+  }
+  return out;
+})();
+
+function bakeAO(pos, nor, idx) {
+  const vcount = pos.length / 3;
+  const tcount = idx.length / 3;
+  const grid = new Map();
+  const cellOf = (v) => Math.floor(v / AO_CELL);
+  const key = (x, y, z) => ((x + 512) * 1024 + (y + 512)) * 1024 + (z + 512);
+  for (let t = 0; t < tcount; t++) {
+    let x0 = Infinity, y0 = Infinity, z0 = Infinity, x1 = -Infinity, y1 = -Infinity, z1 = -Infinity;
+    for (let k = 0; k < 3; k++) {
+      const v = idx[t * 3 + k] * 3;
+      x0 = Math.min(x0, pos[v]); x1 = Math.max(x1, pos[v]);
+      y0 = Math.min(y0, pos[v + 1]); y1 = Math.max(y1, pos[v + 1]);
+      z0 = Math.min(z0, pos[v + 2]); z1 = Math.max(z1, pos[v + 2]);
+    }
+    for (let x = cellOf(x0); x <= cellOf(x1); x++)
+      for (let y = cellOf(y0); y <= cellOf(y1); y++)
+        for (let z = cellOf(z0); z <= cellOf(z1); z++) {
+          const k = key(x, y, z);
+          let cell = grid.get(k);
+          if (!cell) grid.set(k, (cell = []));
+          cell.push(t);
+        }
+  }
+  const stamp = new Int32Array(tcount).fill(-1);
+  let ray = 0;
+  const out = new Int8Array(vcount);
+  const e1 = [0, 0, 0], e2 = [0, 0, 0], pv = [0, 0, 0], tv = [0, 0, 0], qv = [0, 0, 0];
+  for (let v = 0; v < vcount; v++) {
+    const nx = nor[v * 3] / 127, ny = nor[v * 3 + 1] / 127, nz = nor[v * 3 + 2] / 127;
+    const nl = Math.hypot(nx, ny, nz) || 1;
+    const n = [nx / nl, ny / nl, nz / nl];
+    // Tangent frame around the normal.
+    const a = Math.abs(n[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0];
+    const tx = [n[1] * a[2] - n[2] * a[1], n[2] * a[0] - n[0] * a[2], n[0] * a[1] - n[1] * a[0]];
+    const tl = Math.hypot(...tx);
+    tx[0] /= tl; tx[1] /= tl; tx[2] /= tl;
+    const by = [n[1] * tx[2] - n[2] * tx[1], n[2] * tx[0] - n[0] * tx[2], n[0] * tx[1] - n[1] * tx[0]];
+    const o = [pos[v * 3] + n[0] * 2, pos[v * 3 + 1] + n[1] * 2, pos[v * 3 + 2] + n[2] * 2];
+    let occ = 0;
+    for (const [dx, dy, dz] of AO_DIRS) {
+      const d = [tx[0] * dx + by[0] * dy + n[0] * dz, tx[1] * dx + by[1] * dy + n[1] * dz, tx[2] * dx + by[2] * dy + n[2] * dz];
+      const ex = o[0] + d[0] * AO_REACH, ey = o[1] + d[1] * AO_REACH, ez = o[2] + d[2] * AO_REACH;
+      ray++;
+      let best = AO_REACH;
+      for (let x = cellOf(Math.min(o[0], ex)); x <= cellOf(Math.max(o[0], ex)); x++)
+        for (let y = cellOf(Math.min(o[1], ey)); y <= cellOf(Math.max(o[1], ey)); y++)
+          for (let z = cellOf(Math.min(o[2], ez)); z <= cellOf(Math.max(o[2], ez)); z++) {
+            const cell = grid.get(key(x, y, z));
+            if (!cell) continue;
+            for (const t of cell) {
+              if (stamp[t] === ray) continue;
+              stamp[t] = ray;
+              // Möller–Trumbore
+              const i0 = idx[t * 3] * 3, i1 = idx[t * 3 + 1] * 3, i2 = idx[t * 3 + 2] * 3;
+              for (let k = 0; k < 3; k++) { e1[k] = pos[i1 + k] - pos[i0 + k]; e2[k] = pos[i2 + k] - pos[i0 + k]; }
+              pv[0] = d[1] * e2[2] - d[2] * e2[1]; pv[1] = d[2] * e2[0] - d[0] * e2[2]; pv[2] = d[0] * e2[1] - d[1] * e2[0];
+              const det = e1[0] * pv[0] + e1[1] * pv[1] + e1[2] * pv[2];
+              if (Math.abs(det) < 1e-9) continue;
+              const inv = 1 / det;
+              tv[0] = o[0] - pos[i0]; tv[1] = o[1] - pos[i0 + 1]; tv[2] = o[2] - pos[i0 + 2];
+              const u = (tv[0] * pv[0] + tv[1] * pv[1] + tv[2] * pv[2]) * inv;
+              if (u < 0 || u > 1) continue;
+              qv[0] = tv[1] * e1[2] - tv[2] * e1[1]; qv[1] = tv[2] * e1[0] - tv[0] * e1[2]; qv[2] = tv[0] * e1[1] - tv[1] * e1[0];
+              const w = (d[0] * qv[0] + d[1] * qv[1] + d[2] * qv[2]) * inv;
+              if (w < 0 || u + w > 1) continue;
+              const hit = (e2[0] * qv[0] + e2[1] * qv[1] + e2[2] * qv[2]) * inv;
+              if (hit > 0.5 && hit < best) best = hit;
+            }
+          }
+      if (best < AO_REACH) occ += (1 - best / AO_REACH) ** 2;
+    }
+    out[v] = Math.round(Math.min(1, (occ / AO_DIRS.length) * 2.2) * 127);
+  }
+  return out;
+}
+
 // ---- build ----
 const meta = [];
 const chunks = [];
@@ -234,10 +328,15 @@ for (const part of parts) {
     console.warn('skip (too big)', part.id, vcount);
     continue;
   }
-  // Layout per part: Int16 positions (0.1 LDU), Int8 normals (padded to 4), Uint16 indices.
+  // Layout per part: Int16 positions (0.1 LDU), Int8 normals + baked AO in the 4th byte,
+  // Uint16 indices.
   const posBuf = Buffer.from(new Int16Array(pos).buffer);
+  const ao = bakeAO(pos, nor, idx);
   const norArr = new Int8Array(vcount * 4);
-  for (let v = 0; v < vcount; v++) norArr.set(nor.slice(v * 3, v * 3 + 3), v * 4);
+  for (let v = 0; v < vcount; v++) {
+    norArr.set(nor.slice(v * 3, v * 3 + 3), v * 4);
+    norArr[v * 4 + 3] = ao[v];
+  }
   const norBuf = Buffer.from(norArr.buffer);
   const idxBuf = Buffer.from(new Uint16Array(idx).buffer);
   const pad = (b) => (b.length % 4 ? Buffer.concat([b, Buffer.alloc(4 - (b.length % 4))]) : b);

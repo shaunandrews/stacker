@@ -102,7 +102,9 @@ export class Library {
       const idx = new Uint16Array(this.data, norOffset + p.vertices * 4, p.indices);
       const P = new Float32Array(p.vertices * 3);
       const N = new Float32Array(p.vertices * 3);
+      const A = new Float32Array(p.vertices); // baked ambient occlusion (0 = open)
       for (let v = 0; v < p.vertices; v++) {
+        A[v] = Math.max(0, nor[v * 4 + 3]) / 127;
         P[v * 3] = pos[v * 3] * s;
         P[v * 3 + 1] = pos[v * 3 + 1] * s;
         P[v * 3 + 2] = pos[v * 3 + 2] * s;
@@ -113,6 +115,7 @@ export class Library {
       const g = new BufferGeometry();
       g.setAttribute('position', new BufferAttribute(P, 3));
       g.setAttribute('normal', new BufferAttribute(N, 3));
+      g.setAttribute('ao', new BufferAttribute(A, 1));
       g.setIndex(new BufferAttribute(idx.slice(), 1));
       if (p.fixed) {
         // Stored alpha is 255 where a color is fixed; the shader wants the opposite
@@ -178,21 +181,24 @@ export function studGeometry(): BufferGeometry {
   const SEG = 16;
   const pos: number[] = [0, 4 * L, 0];
   const nor: number[] = [0, 1, 0];
+  const ao: number[] = [0]; // baked occlusion, as on parts: dark where the stud meets the plate
+  const ringAo = [0, 0.05, 0.45];
   // Rings: top edge of the rim (normal up), bottom of the rim and foot of the side (outward).
   const rings: Array<[number, number, boolean]> = [
     [5.5, 4, true],
     [6, 3.5, false],
     [6, 0, false],
   ];
-  for (const [r, y, up] of rings) {
+  rings.forEach(([r, y, up], n) => {
     for (let k = 0; k < SEG; k++) {
+      ao.push(ringAo[n]);
       const a = (k / SEG) * Math.PI * 2;
       const c = Math.cos(a);
       const s = Math.sin(a);
       pos.push(r * c * L, y * L, r * s * L);
       nor.push(up ? 0 : c, up ? 1 : 0, up ? 0 : s);
     }
-  }
+  });
   const idx: number[] = [];
   const ring = (n: number, k: number) => 1 + n * SEG + (k % SEG);
   for (let k = 0; k < SEG; k++) {
@@ -204,6 +210,7 @@ export function studGeometry(): BufferGeometry {
   const g = new BufferGeometry();
   g.setAttribute('position', new BufferAttribute(new Float32Array(pos), 3));
   g.setAttribute('normal', new BufferAttribute(new Float32Array(nor), 3));
+  g.setAttribute('ao', new BufferAttribute(new Float32Array(ao), 1));
   g.setIndex(idx);
   return g;
 }
