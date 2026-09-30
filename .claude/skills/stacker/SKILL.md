@@ -73,16 +73,14 @@ The app is a static site. The space is `spc_faf94500d20b4e979a35db4ede374b64` (r
    ```bash
    cd dist && rm -f ../../site.zip && zip -qr ../../site.zip . -x "*AGENTS.md" && cd ..
    ```
-3. Publish a new version to the existing space — **never create a new space**:
+3. Publish a new version to the existing space with the `sf` CLI — **never create a new space**:
    ```bash
-   curl -q -sS -H "x-spacefast-client: agent/direct-api" -H "Authorization: Bearer $SPACEFAST_TOKEN" \
-     --form-string "spaceId=spc_faf94500d20b4e979a35db4ede374b64" \
-     -F "archive=@../site.zip" https://api.spacefast.com/v1/publish
+   cd .. && sf publish site.zip --space spc_faf94500d20b4e979a35db4ede374b64 --wait --json -y -m "<commit sha + subject>"
    ```
-4. Read the receipt: `data.version.status` should be `ready` and `data.activation.outcome` `activated`. If `data.next.action` isn't `done`, follow it (see https://spacefast.com/setup.md). `hostname_attach_pending` is informational.
-5. Tell Shaun it's live at the same link and to reload on the Quest.
+4. Check the result: `data.versionStatus` should be `ready` (`noChanges: true` just means the build was identical). Don't print the raw output — it may include preview links containing secret `/__/` keys. Parse and show only status fields.
+5. Tell Shaun it's live and to reload on the Quest. Public site: https://semantic-nest.view.fast/
 
-**Token:** `SPACEFAST_TOKEN` must be an account token for the space. Never print it, paste it, write it into the repo, or put it in a command literal. If none is available in the environment, ask Shaun to set it, or use the CLI (`curl -fsSL https://spacefast.com/install.sh | bash`, then `sf setup agent` and `sf publish` from `app/dist`). Agent instructions: https://spacefast.com/setup.md.
+**Auth:** Shaun is logged in with `sf login`. The CLI keeps the credential in the macOS Keychain (service "Spacefast CLI"), so any session can publish. Check with `sf whoami --json`. If it's logged out, ask Shaun to run `sf login` himself (browser approval). Never handle, print, or store tokens yourself, and never pass `--token` or `--show-secret`. Docs: https://spacefast.com/docs/cli.
 
 Claimed spaces serve binary files (`parts.bin`); unclaimed spaces don't.
 
