@@ -86,6 +86,8 @@ For each part:
   "offset": 0, "vertices": 412, "indices": 1236 }
 ```
 
+Hinged parts get a `hinge: { p, a, r }` (pivot and axis in the baked frame, range in degrees) from `tools/hinges.json`; paired parts get `joint.mounts` from `tools/special-parts.json` (see [03](03-interaction.md#hinges-startswing)).
+
 Current output: 199 parts, ~1.8 MB binary, ~760 triangles per part on average (~420 before bevels; a 2×2 brick is 220 → 400, most of it stud rims).
 
 ## 4. Runtime decode (`blocks.ts`)

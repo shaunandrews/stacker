@@ -96,6 +96,20 @@ Given the carried pieces, find where they'd land. The result is one `Placement` 
 
 Heights are counted in **half plates** (4 LDU): plate = 2, brick = 6, minifig legs = 10.
 
+### Joints and mounts
+
+Paired parts snap by joint rather than studs: a *top* goes onto one of its *base*'s mounts (`joint.mounts` in `parts.json`, from `tools/special-parts.json`; default a shared LDraw origin). Hinge tops and turntables go on their bases; glass, panes and shutters go into window frames (a 1×4×3 frame has two pane mounts and two shutter mounts, and a shutter holder takes a shutter on either side). When mounts share a spot, the one nearest the angle you're holding wins. A top may sit inside its partner's box, so that collision is ignored.
+
+## Hinges (`startSwing`)
+
+Parts listed in `tools/hinges.json` swing once placed: 1×2 hinges, swivel plates, hinge bricks, turntables, window panes, shutters and doors (garage doors in the Fire Station, for example). Each has a pivot, an axis and a range (±90° hinges, ±100° panes and doors, ±120° shutters; turntables turn freely).
+
+- **Grab it** (or anything built onto it: the nearest hinge it's stud-connected to) and it turns about its axis, following your hand. By ray or mouse, it follows where the ray crosses the swing's plane. A yellow line shows the axis, it ticks every 15°, and it thumps at a stop.
+- **What swings:** the hinged part plus everything connected to it through its studs, transitively. If that group is also fixed to the plate another way, the hinge is locked and the grab takes the piece off as usual.
+- **Pull it off:** move more than 6 cm off the arc (out, or along the axis) and the swing lets go of the hinge; you're holding the piece you grabbed, detached.
+- Hinged parts win targeting within 1 cm of an enclosing part, so panes and doors can be grabbed inside their frames.
+- A swing is one undo step. The angle for the stops is counted from where the part was placed (it resets on reload).
+
 ## Releasing
 
 - Over the **library panel** → the pieces poof (deleted). The library tints red while a held block is over it.

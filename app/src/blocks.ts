@@ -25,7 +25,15 @@ export interface PartDef {
   fixed: boolean; // has fixed-color regions (printed faces, yellow hands)
   overlap?: boolean; // hats and hair: no collision
   conn?: number[][]; // [type (0 stud, 1 socket), x, y, z, ax, ay, az] in LDU, baked frame
-  joint?: { pair: string; role: 'base' | 'top'; o: [number, number, number] };
+  // Paired parts: a top goes onto a base at one of its mounts (LDraw coords; default: shared origin).
+  joint?: {
+    pair: string;
+    role: 'base' | 'top';
+    o: [number, number, number];
+    mounts?: Array<{ pair: string; at: [number, number, number]; yaw: number }>;
+  };
+  // Swings once placed: pivot and axis in the baked frame (LDU), range in degrees (null: turns freely).
+  hinge?: { p: [number, number, number]; a: [number, number, number]; r: [number, number] | null };
   offset: number;
   vertices: number;
   indices: number;

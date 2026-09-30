@@ -24,7 +24,8 @@ Stacker is a mixed-reality brick-building app for Meta Quest 3, built for the br
 Working prototype, tested in the IWSDK Quest 3 emulator and by hand on device:
 
 - 300 LDraw parts in 11 library tabs (incl. Special: hinges, turntables, SNOT), 32 official colors, 6 minifig presets
-- Connector snapping: studs and sockets in any orientation, free rotation, joint pairs (hinges, turntables, window glass)
+- Connector snapping: studs and sockets in any orientation, free rotation, joint pairs (hinges, turntables, window glass, panes, shutters)
+- Hinges, turntables, doors, window panes and shutters swing after placing, carrying whatever is built on them
 - Build / Select / Paint tools, duplicate, delete, group moves
 - Movable, tiltable, resizable platform; movable, resizable library with 3 materials (plastic, wood, clear)
 - Settings panel: 6 look presets up front; environments, tone, Hz, Stress and fine-tune sliders under Advanced

@@ -179,5 +179,108 @@
    "pair": "window-1x4x3",
    "role": "top"
   }
+ },
+ {
+  "id": "3853",
+  "name": "Window 1 x 4 x 3",
+  "tab": "Windows",
+  "joint": {
+   "pair": "frame-1x4x3",
+   "role": "base",
+   "mounts": [
+    {
+     "pair": "pane-1x2x3",
+     "at": [
+      -35,
+      4,
+      -5
+     ],
+     "yaw": -90
+    },
+    {
+     "pair": "pane-1x2x3",
+     "at": [
+      35,
+      4,
+      -5
+     ],
+     "yaw": 90
+    },
+    {
+     "pair": "shutter-1x2x3",
+     "at": [
+      -40,
+      0,
+      -15
+     ],
+     "yaw": -90
+    },
+    {
+     "pair": "shutter-1x2x3",
+     "at": [
+      40,
+      0,
+      -15
+     ],
+     "yaw": 90
+    }
+   ]
+  }
+ },
+ {
+  "id": "3854",
+  "name": "Window 1 x 2 x 3 Pane",
+  "tab": "Windows",
+  "joint": {
+   "pair": "pane-1x2x3",
+   "role": "top"
+  }
+ },
+ {
+  "id": "3856",
+  "name": "Window 1 x 2 x 3 Shutter",
+  "tab": "Windows",
+  "joint": {
+   "pair": "shutter-1x2x3",
+   "role": "top"
+  }
+ },
+ {
+  "id": "3581",
+  "name": "Brick 1 x 1 x 2 with Shutter Holder",
+  "tab": "Windows",
+  "joint": {
+   "pair": "shutter-holder",
+   "role": "base",
+   "mounts": [
+    {
+     "pair": "shutter-1x2x2",
+     "at": [
+      0,
+      0,
+      -13
+     ],
+     "yaw": -90
+    },
+    {
+     "pair": "shutter-1x2x2",
+     "at": [
+      0,
+      0,
+      -13
+     ],
+     "yaw": 90
+    }
+   ]
+  }
+ },
+ {
+  "id": "3582",
+  "name": "Window 1 x 2 x 2 Shutter",
+  "tab": "Windows",
+  "joint": {
+   "pair": "shutter-1x2x2",
+   "role": "top"
+  }
  }
 ]

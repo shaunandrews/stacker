@@ -1,0 +1,153 @@
+{
+ "_": "Parts that swing once placed: pivot and axis in the part's LDraw coordinates (LDU, y down), range in degrees (null = turns freely).",
+ "3938": {
+  "name": "Hinge 1 x 2 Top",
+  "pivot": [
+   0,
+   10,
+   0
+  ],
+  "axis": [
+   1,
+   0,
+   0
+  ],
+  "range": [
+   -90,
+   90
+  ]
+ },
+ "2430": {
+  "name": "Hinge Plate 1 x 4 Swivel Top",
+  "pivot": [
+   0,
+   0,
+   0
+  ],
+  "axis": [
+   0,
+   1,
+   0
+  ],
+  "range": [
+   -90,
+   90
+  ]
+ },
+ "3830": {
+  "name": "Hinge Brick 1 x 4 Top",
+  "pivot": [
+   0,
+   0,
+   0
+  ],
+  "axis": [
+   0,
+   1,
+   0
+  ],
+  "range": [
+   -90,
+   90
+  ]
+ },
+ "3679": {
+  "name": "Turntable 2 x 2 Top",
+  "pivot": [
+   0,
+   0,
+   0
+  ],
+  "axis": [
+   0,
+   1,
+   0
+  ],
+  "range": null
+ },
+ "3854": {
+  "name": "Window 1 x 2 x 3 Pane",
+  "pivot": [
+   0,
+   0,
+   0
+  ],
+  "axis": [
+   0,
+   1,
+   0
+  ],
+  "range": [
+   -100,
+   100
+  ]
+ },
+ "3856": {
+  "name": "Window 1 x 2 x 3 Shutter",
+  "pivot": [
+   0,
+   0,
+   0
+  ],
+  "axis": [
+   0,
+   1,
+   0
+  ],
+  "range": [
+   -120,
+   120
+  ]
+ },
+ "3582": {
+  "name": "Window 1 x 2 x 2 Shutter",
+  "pivot": [
+   0,
+   0,
+   0
+  ],
+  "axis": [
+   0,
+   1,
+   0
+  ],
+  "range": [
+   -120,
+   120
+  ]
+ },
+ "3644": {
+  "name": "Door 1 x 4 x 6",
+  "pivot": [
+   0,
+   0,
+   0
+  ],
+  "axis": [
+   0,
+   1,
+   0
+  ],
+  "range": [
+   -100,
+   100
+  ]
+ },
+ "3190": {
+  "name": "Door 1 x 3 x 3 Right",
+  "pivot": [
+   0,
+   0,
+   0
+  ],
+  "axis": [
+   0,
+   1,
+   0
+  ],
+  "range": [
+   -100,
+   100
+  ]
+ }
+}

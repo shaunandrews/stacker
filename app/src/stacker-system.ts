@@ -180,6 +180,26 @@ interface Placed extends Placement {
   slot: number;
   batch: string;
   mi?: Matrix4;
+  swing?: number; // radians turned about its hinge since it was placed
+}
+
+/** A hinged part being swung by a hand, with everything built onto it. */
+interface Swing {
+  rec: Placed; // the hinged part
+  grabbed: Placed; // what the hand took hold of (it, or something built onto it)
+  group: Placed[];
+  start: Matrix4[]; // the group's transforms when the swing began
+  pivot: Vector3; // platform-local
+  axis: Vector3;
+  u: Vector3; // in-plane directions the hand's angle is measured from
+  w: Vector3;
+  radius: number; // hand's distance from the axis at the grab
+  along: number; // and along it
+  prev: number;
+  turned: number; // hand turn so far (unwrapped)
+  angle0: number;
+  step: number; // last 15° notch, for the ticks
+  atLimit: boolean;
 }
 
 interface Batch {
@@ -214,7 +234,7 @@ interface Conn {
 interface PartConns {
   male: Array<{ p: Vector3; a: Vector3 }>;
   female: Array<{ p: Vector3; a: Vector3 }>;
-  joint: { pair: string; role: string; o: Vector3 } | null;
+  joint: { pair: string; role: string; o: Vector3; mounts: Array<{ pair: string; m: Matrix4 }> } | null;
   body: { c: Vector3; h: Vector3 }; // collision box (studs trimmed off the top)
 }
 
@@ -297,6 +317,7 @@ interface HandState {
   target: Target | null;
   targetFar: boolean;
   pieces: Piece[] | null;
+  swing: Swing | null; // swinging a hinged part
   box: KitBox | null; // a kit box in hand
   tear: KitBox | null; // pulling this box's tear strip
   tearFrom: Vector3;
@@ -465,6 +486,7 @@ export class StackerSystem extends createSystem({}) {
   private builtForXR = false;
   private recenterDelay = -1;
   private snapOut: Placement[] = [];
+  private swingM = new Matrix4();
 
   // Stats
   private frameCount = 0;
@@ -641,7 +663,7 @@ export class StackerSystem extends createSystem({}) {
     // Redraw shadows only while something that casts them moves, or after a change —
     // last, so everything this frame changed is in.
     let moving = this.shadowDirty || this.snaps.length > 0 || this.poofs.length > 0;
-    for (const h of this.hands) moving ||= !!h.pieces || !!h.box || !!h.frame;
+    for (const h of this.hands) moving ||= !!h.pieces || !!h.box || !!h.frame || !!h.swing;
     if (moving) {
       this.renderer.shadowMap.needsUpdate = true;
       this.shadowDirty = false;
@@ -1696,7 +1718,18 @@ export class StackerSystem extends createSystem({}) {
       for (const [t, x, y, z, ax, ay, az] of def.conn ?? []) {
         (t === 0 ? male : female).push({ p: new Vector3(x * L, y * L, z * L), a: new Vector3(ax, ay, az).normalize() });
       }
-      const joint = def.joint ? { pair: def.joint.pair, role: def.joint.role, o: new Vector3(...def.joint.o).multiplyScalar(L) } : null;
+      let joint: PartConns['joint'] = null;
+      if (def.joint) {
+        const o = new Vector3(...def.joint.o).multiplyScalar(L);
+        // Where a top's LDraw origin goes, in this base's baked frame (LDraw → three: y and z flip).
+        const mounts = (def.joint.mounts ?? [{ pair: def.joint.pair, at: [0, 0, 0] as [number, number, number], yaw: 0 }]).map((mt) => ({
+          pair: mt.pair,
+          m: new Matrix4()
+            .makeTranslation(o.x + mt.at[0] * L, o.y - mt.at[1] * L, o.z - mt.at[2] * L)
+            .multiply(new Matrix4().makeRotationY((-mt.yaw * Math.PI) / 180)),
+        }));
+        joint = { pair: def.joint.pair, role: def.joint.role, o, mounts };
+      }
       const bb = this.lib.geometries[i].boundingBox!;
       const min = bb.min.clone();
       const max = bb.max.clone();
@@ -2062,6 +2095,7 @@ export class StackerSystem extends createSystem({}) {
    * Fills this.snapOut (one transform per piece).
    */
   private computeSnap(pieces: Piece[]): boolean {
+    type Cand = { D: Matrix4; score: number; partner?: Placed };
     const s = this.scale;
     const r = this.root.object3D!;
     r.updateMatrixWorld(true);
@@ -2082,7 +2116,7 @@ export class StackerSystem extends createSystem({}) {
     }
 
     const reach = Math.min(CELL, Math.max(dims.pitch * 1.2, 0.02 / s));
-    const cands: Array<{ D: Matrix4; score: number }> = [];
+    const cands: Cand[] = [];
     const P = new Vector3();
     const Q = new Vector3();
     const A = new Vector3();
@@ -2110,16 +2144,23 @@ export class StackerSystem extends createSystem({}) {
           }
         }
       }
-      // Paired parts (hinge halves, turntables, window glass) go exactly onto their partner.
+      // Paired parts (hinge halves, turntables, window glass, panes, shutters) go exactly
+      // onto a mount of their partner — and may sit inside it.
       if (pc.joint?.role === 'top') {
         const here = new Vector3().setFromMatrixPosition(cur[k]);
+        const tj = pc.joint;
         for (const rec of this.placedRecs) {
           const bj = this.pconn[rec.part].joint;
-          if (!bj || bj.role !== 'base' || bj.pair !== pc.joint.pair) continue;
-          const target = new Matrix4().makeTranslation(bj.o.x - pc.joint.o.x, bj.o.y - pc.joint.o.y, bj.o.z - pc.joint.o.z).premultiply(rec.m);
-          const dist = this.v3.setFromMatrixPosition(target).distanceTo(here);
-          if (dist > reach * 2) continue;
-          cands.push({ D: target.multiply(cur[k].clone().invert()), score: dist / dims.pitch - 2 });
+          if (!bj || bj.role !== 'base') continue;
+          for (const mount of bj.mounts) {
+            if (mount.pair !== tj.pair) continue;
+            const target = rec.m.clone().multiply(mount.m).multiply(new Matrix4().makeTranslation(-tj.o.x, -tj.o.y, -tj.o.z));
+            const dist = this.v3.setFromMatrixPosition(target).distanceTo(here);
+            if (dist > reach * 2) continue;
+            // Mounts that share a spot (a shutter either side of its holder): the one the piece is held closest to.
+            const turn = new Quaternion().setFromRotationMatrix(target).angleTo(q);
+            cands.push({ D: target.multiply(cur[k].clone().invert()), score: dist / dims.pitch - 2 + turn * 0.5, partner: rec });
+          }
         }
       }
     });
@@ -2136,7 +2177,8 @@ export class StackerSystem extends createSystem({}) {
       if (tried.some((d) => this.sameTransform(d, cand.D))) continue;
       tried.push(cand.D);
       const mats = cur.map((m) => m.clone().premultiply(cand.D));
-      if (mats.some((m, k) => this.bodyCollides(pieces[k].block.part, m, nearby))) continue;
+      const others = cand.partner ? nearby.filter((rec) => rec !== cand.partner) : nearby;
+      if (mats.some((m, k) => this.bodyCollides(pieces[k].block.part, m, others))) continue;
       const score = this.countEngaged(pieces, mats) * 2 - cand.score;
       if (score > bestScore) {
         bestScore = score;
@@ -2293,6 +2335,7 @@ export class StackerSystem extends createSystem({}) {
       target: null,
       targetFar: false,
       pieces: null,
+      swing: null,
       box: null,
       tear: null,
       tearFrom: new Vector3(),
@@ -2549,6 +2592,9 @@ export class StackerSystem extends createSystem({}) {
       if (released) this.releasePieces(h);
       else if (h.down.has('b')) this.dropPieces(h);
       else this.holdPieces(h, delta);
+    } else if (h.swing) {
+      if (released) this.endSwing(h);
+      else this.swingTick(h);
     } else if (h.box) {
       if (released) this.releaseBox(h);
       else if (h.down.has('b')) this.returnBox(h.box);
@@ -2750,6 +2796,8 @@ export class StackerSystem extends createSystem({}) {
         sc = this.boxDist(lo2, ext.x, ext.y, ext.z) + lo2.length() * 0.01;
       }
       sc *= s;
+      // Hinged parts sit inside their frames' boxes (panes, doors): they win within a centimeter.
+      if (sc < limit && this.lib.parts[rec.part].hinge) sc = Math.max(0, sc - 0.01);
       if (sc < limit && (!best || sc < best.score)) best = { kind: 'placed', placed: rec, score: sc };
     }
     // A bare panel hit (no item) is only there to block rays; don't target it.
@@ -2889,6 +2937,10 @@ export class StackerSystem extends createSystem({}) {
       }
       case 'placed': {
         const group = this.selection.has(t.placed!) && this.selection.size > 1 ? [...this.selection] : [t.placed!];
+        // Hinged parts (hinges, turntables, doors, panes, shutters) — and whatever is built
+        // onto them — swing instead of coming off.
+        const hinged = group.length === 1 ? this.hingeFor(t.placed!) : null;
+        if (hinged && this.startSwing(h, btn, hinged, t.placed!)) return;
         this.holdPlaced(h, btn, t.placed!, group, false);
         return;
       }
@@ -2984,6 +3036,178 @@ export class StackerSystem extends createSystem({}) {
 
   private grabPoint(h: HandState): Vector3 {
     return h.anchorDist >= 0 ? this.v2.copy(h.rayOrigin).addScaledVector(h.rayDir, h.anchorDist) : this.v2.copy(h.point);
+  }
+
+  // ---- hinges
+
+  /**
+   * What swings with a hinged part: it and everything connected to it through its studs,
+   * transitively. Null when that group is also fixed to the plate some other way (locked).
+   */
+  private swingGroup(rec: Placed): Placed[] | null {
+    const group = [rec];
+    const seen = new Set(group);
+    for (let k = 0; k < group.length; k++) {
+      const node = group[k];
+      for (const [, c] of this.recConns.get(node) ?? []) {
+        if (node === rec && c.type !== 0) continue; // the hinged part's own mount stays put
+        for (const o of this.connsNear(c.p, 1 - c.type, 0.0012, this.near)) {
+          if (o.rec === node || o.a.dot(c.a) > FACING) continue;
+          if (!o.rec) return null;
+          if (!seen.has(o.rec)) {
+            seen.add(o.rec);
+            group.push(o.rec);
+          }
+        }
+      }
+      if (group.length > 120) return null;
+    }
+    return group;
+  }
+
+  /** The hinge that swings this block: its own, or the nearest one it's built onto. */
+  private hingeFor(rec: Placed): Placed | null {
+    if (this.lib.parts[rec.part].hinge) return rec;
+    let best: Placed | null = null;
+    let size = Infinity;
+    for (const r of this.placedRecs) {
+      if (!this.lib.parts[r.part].hinge) continue;
+      const g = this.swingGroup(r);
+      if (g && g.length < size && g.includes(rec)) {
+        best = r;
+        size = g.length;
+      }
+    }
+    return best;
+  }
+
+  private startSwing(h: HandState, btn: Btn, rec: Placed, grabbed: Placed): boolean {
+    const group = this.swingGroup(rec);
+    if (!group) return false;
+    const hinge = this.lib.parts[rec.part].hinge!;
+    const pivot = new Vector3(...hinge.p).multiplyScalar(dims.ldu).applyMatrix4(rec.m);
+    const axis = new Vector3(...hinge.a).applyQuaternion(this.q1.setFromRotationMatrix(rec.m)).normalize();
+    h.anchorDist = h.mode !== 'hand' && h.targetFar ? h.target!.score : -1;
+    const d = this.root.object3D!.worldToLocal(this.v1.copy(this.grabPoint(h))).sub(pivot);
+    const along = d.dot(axis);
+    d.addScaledVector(axis, -along);
+    // Grabbed right on the axis: measure from the part's own center instead.
+    if (d.length() < 0.002) d.setFromMatrixPosition(rec.m).sub(pivot).addScaledVector(axis, -d.dot(axis));
+    if (d.length() < 1e-5) d.set(1, 0, 0).addScaledVector(axis, -axis.x);
+    const radius = d.length();
+    const u = d.clone().normalize();
+    for (const r of group) this.indexConns(r, false); // nothing snaps to it mid-swing
+    h.swing = {
+      rec,
+      grabbed,
+      group,
+      start: group.map((r) => r.m.clone()),
+      pivot,
+      axis,
+      u,
+      w: new Vector3().crossVectors(axis, u),
+      radius,
+      along,
+      prev: 0,
+      turned: 0,
+      angle0: rec.swing ?? 0,
+      step: Math.round((rec.swing ?? 0) / (Math.PI / 12)),
+      atLimit: false,
+    };
+    h.holdButton = btn;
+    h.target = null;
+    this.tick(0.3);
+    return true;
+  }
+
+  private swingTick(h: HandState): void {
+    const sw = h.swing!;
+    const r = this.root.object3D!;
+    const p = r.worldToLocal(this.v1.copy(this.grabPoint(h)));
+    let onPlane = h.anchorDist < 0;
+    if (h.anchorDist >= 0) {
+      // By ray or mouse: follow where the ray crosses the swing's plane.
+      const o = r.worldToLocal(this.v2.copy(h.rayOrigin));
+      const dir = this.v3.copy(h.rayDir).applyQuaternion(this.q1.copy(r.quaternion).invert());
+      const den = dir.dot(sw.axis);
+      if (Math.abs(den) > 0.15) {
+        const t = this.v4.copy(sw.pivot).addScaledVector(sw.axis, sw.along).sub(o).dot(sw.axis) / den;
+        if (t > 0) {
+          p.copy(o).addScaledVector(dir, t);
+          onPlane = true;
+        }
+      }
+    }
+    const d = p.sub(sw.pivot);
+    const along = d.dot(sw.axis);
+    d.addScaledVector(sw.axis, -along);
+    const radius = d.length();
+    // Pulled well off the arc: take what was grabbed off instead.
+    if (onPlane && (Math.abs(along - sw.along) * this.scale > 0.06 || (radius - sw.radius) * this.scale > 0.06)) {
+      const btn = h.holdButton!;
+      const rec = sw.grabbed;
+      this.endSwing(h);
+      this.holdPlaced(h, btn, rec, [rec], false);
+      return;
+    }
+    if (radius > 1e-4) {
+      const a = Math.atan2(d.dot(sw.w), d.dot(sw.u));
+      let delta = a - sw.prev;
+      if (delta > Math.PI) delta -= 2 * Math.PI;
+      if (delta < -Math.PI) delta += 2 * Math.PI;
+      sw.prev = a;
+      sw.turned += delta;
+    }
+    const range = this.lib.parts[sw.rec.part].hinge!.r;
+    let angle = sw.angle0 + sw.turned;
+    let limit = false;
+    if (range) {
+      const lo = (range[0] * Math.PI) / 180;
+      const hi = (range[1] * Math.PI) / 180;
+      limit = angle <= lo || angle >= hi;
+      angle = Math.min(hi, Math.max(lo, angle));
+      sw.turned = angle - sw.angle0; // pushing past the stop doesn't wind up
+    }
+    if (limit && !sw.atLimit) this.pulse(h.hand, 0.5, 30);
+    sw.atLimit = limit;
+    const step = Math.round(angle / (Math.PI / 12));
+    if (step !== sw.step) {
+      sw.step = step;
+      this.tick(0.08);
+    }
+    this.applySwing(sw, angle - sw.angle0);
+    sw.rec.swing = angle;
+    // Show the axis it turns about.
+    const pos = h.guide.geometry.attributes.position as BufferAttribute;
+    const reach = 0.025 / this.scale;
+    r.localToWorld(this.v2.copy(sw.pivot).addScaledVector(sw.axis, -reach));
+    r.localToWorld(this.v3.copy(sw.pivot).addScaledVector(sw.axis, reach));
+    pos.setXYZ(0, this.v2.x, this.v2.y, this.v2.z);
+    pos.setXYZ(1, this.v3.x, this.v3.y, this.v3.z);
+    pos.needsUpdate = true;
+    h.guide.visible = true;
+  }
+
+  /** Turn the swinging group `rel` radians from where it started, about the hinge. */
+  private applySwing(sw: Swing, rel: number): void {
+    const R = this.swingM.makeTranslation(sw.pivot.x, sw.pivot.y, sw.pivot.z).multiply(this.m2.makeRotationAxis(sw.axis, rel));
+    R.multiply(this.m2.makeTranslation(-sw.pivot.x, -sw.pivot.y, -sw.pivot.z));
+    sw.group.forEach((rec, k) => {
+      rec.m.copy(sw.start[k]).premultiply(R);
+      rec.mi!.copy(rec.m).invert();
+      const batch = this.batches.get(rec.batch);
+      if (batch) this.writeInstance(batch, rec);
+    });
+    this.shadowDirty = true;
+  }
+
+  private endSwing(h: HandState): void {
+    const sw = h.swing!;
+    h.swing = null;
+    h.holdButton = null;
+    for (const r of sw.group) this.indexConns(r, true);
+    this.editGen++;
+    this.dirty = this.shadowDirty = this.edited = true;
   }
 
   private holdPlaced(h: HandState, btn: Btn, anchor: Placed, group: Placed[], duplicate: boolean): void {
@@ -3275,7 +3499,7 @@ export class StackerSystem extends createSystem({}) {
     const t = h.target;
     // Pinch ring: sits between thumb and index, shrinks as they close, fills blue on pinch.
     const ring = h.pinchRing;
-    const busy = !!(h.pieces || h.frame || h.slider || h.box || h.tear);
+    const busy = !!(h.pieces || h.frame || h.slider || h.box || h.tear || h.swing);
     ring.visible = h.mode === 'hand' && !busy && h.pinchGap < 0.07;
     if (ring.visible) {
       ring.position.copy(h.point);
@@ -3302,7 +3526,7 @@ export class StackerSystem extends createSystem({}) {
       (h.outline.material as MeshBasicMaterial).color.set(this.tool === 'paint' ? this.lib.colors[this.color].hex : 0xffffff);
       h.outline.visible = true;
     }
-    const showRay = h.mode !== 'none' && h.mode !== 'mouse' && !h.pieces && !h.frame && !h.box && (h.targetFar || !t || !!h.slider || !!h.tear);
+    const showRay = h.mode !== 'none' && h.mode !== 'mouse' && !h.pieces && !h.frame && !h.box && (h.targetFar || !t || !!h.slider || !!h.tear || !!h.swing);
     h.ray.visible = showRay;
     h.cursor.visible = showRay && !!t;
     if (h.mode === 'mouse') {
@@ -4063,7 +4287,7 @@ export class StackerSystem extends createSystem({}) {
 
   private busy(): boolean {
     if (this.snaps.length) return true;
-    for (const h of this.hands) if (h.pieces || h.painting || h.corner >= 0 || h.slider) return true;
+    for (const h of this.hands) if (h.pieces || h.painting || h.corner >= 0 || h.slider || h.swing) return true;
     return false;
   }
 

@@ -22,6 +22,7 @@ const selection = JSON.parse(fs.readFileSync(path.join(ROOT, 'tools/selection.js
 const extra = JSON.parse(fs.readFileSync(path.join(ROOT, 'tools/kit-parts.json'), 'utf8')).parts;
 const minifig = JSON.parse(fs.readFileSync(path.join(ROOT, 'tools/minifigs.json'), 'utf8'));
 const special = JSON.parse(fs.readFileSync(path.join(ROOT, 'tools/special-parts.json'), 'utf8'));
+const hinges = JSON.parse(fs.readFileSync(path.join(ROOT, 'tools/hinges.json'), 'utf8'));
 const UNIT = 4; // LDU per height step (half a plate)
 const BEVEL = 0.5; // LDU chamfer on hard convex edges (0.2 mm)
 const SEAM = 0.3; // LDU each outer wall moves in (0.12 mm; a multiple of the 0.1 LDU storage grid, so both sides match)
@@ -276,6 +277,12 @@ for (const part of parts) {
     // Paired parts (hinge top/base, turntable top/base) share their LDraw origin when
     // assembled; record where that origin sits in the baked frame.
     ...(part.joint ? { joint: { ...part.joint, o: [r1(-cx), r1(cy), r1(cz)] } } : {}),
+    // Parts that swing once placed: pivot and axis in the baked frame (LDU), range in degrees.
+    ...(hinges[part.id]
+      ? (({ pivot: [px, py, pz], axis: [ax, ay, az], range }) => ({
+          hinge: { p: [r1(px - cx), r1(cy - py), r1(cz - pz)], a: [ax, -ay || 0, -az || 0], r: range },
+        }))(hinges[part.id])
+      : {}),
     ...(part.overlap ? { overlap: true } : {}),
     offset,
     vertices: vcount,
