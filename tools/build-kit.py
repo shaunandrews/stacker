@@ -48,10 +48,14 @@ def flatten(files, name, M, color, step, out, top=False):
             out.append({'part': ref.replace('\\', '/').replace('.dat', ''), 'color': c, 'M': mul(M, L), 'step': s})
     return s
 
+# Parts printed with a brand logo swap for their plain version.
+PLAIN = {'3596d21': '3596'}
+
 def instances(path):
     files, main = read_model(path)
     out = []
     steps = flatten(files, main, [1,0,0,0, 0,1,0,0, 0,0,1,0], 7, 0, out, top=True)
+    for inst in out: inst['part'] = PLAIN.get(inst['part'], inst['part'])
     return out, steps
 
 if sys.argv[1] == 'collect':
@@ -76,6 +80,20 @@ src, title, kit_id = sys.argv[2], sys.argv[3], sys.argv[4]
 lib = {p['id']: p for p in json.load(open('app/public/parts/parts.json'))['parts']}
 insts, nsteps = instances(src)
 blocks, missing = [], []
+# Grid origin: models aren't always authored on a whole-stud grid, so use the most
+# common stud offset among upright parts.
+votes = {}
+for inst in insts:
+    p = lib.get(inst['part'])
+    if not p: continue
+    a, b, c, x, d, e, f, y, g, h, i, z = inst['M']
+    if abs(e - 1) > 1e-3: continue
+    cx, cy, cz = p['center']
+    turns = round(math.atan2(-c, a) / (math.pi / 2)) % 4
+    fw, fd = (p['w'], p['d']) if turns % 2 == 0 else (p['d'], p['w'])
+    k = (round(((a*cx + b*cy + c*cz + x) / 20 - fw / 2) % 1, 2) % 1, round((-(g*cx + h*cy + i*cz + z) / 20 - fd / 2) % 1, 2) % 1)
+    votes[k] = votes.get(k, 0) + 1
+ox, oz = max(votes, key=votes.get) if votes else (0, 0)
 for inst in insts:
     p = lib.get(inst['part'])
     if not p: missing.append(inst['part']); continue
@@ -86,15 +104,21 @@ for inst in insts:
     T = [wx, -wy, -wz]
     R = [a, -b, -c, -d, e, f, -g, h, i]
     blk = {'part': inst['part'], 'color': inst['color'], 'step': inst['step'], 'h': p['h'], 'T': T, 'R': R}
+    # Lowest point of the part's box in model space, whatever its rotation.
+    blk['low'] = T[1] - (abs(R[3]) * p['w'] * 10 + abs(R[4]) * p['h'] * UNIT / 2 + abs(R[5]) * p['d'] * 10)
     if abs(R[4] - 1) < 1e-3:
         turns = round(math.atan2(R[2], R[0]) / (math.pi / 2)) % 4
         fw, fd = (p['w'], p['d']) if turns % 2 == 0 else (p['d'], p['w'])
-        ii, jj = T[0] / 20 - fw / 2, T[2] / 20 - fd / 2
+        ii, jj = T[0] / 20 - fw / 2 - ox, T[2] / 20 - fd / 2 - oz
         if abs(ii - round(ii)) < 0.05 and abs(jj - round(jj)) < 0.05:
             blk.update({'i': round(ii), 'j': round(jj), 'turns': turns, 'fw': fw, 'fd': fd})
     blocks.append(blk)
 lat = [b for b in blocks if 'i' in b]
-base = min((b['T'][1] - b['h'] * UNIT / 2) for b in (lat or blocks))
+bots = [b['T'][1] - b['h'] * UNIT / 2 for b in (lat or blocks)]
+res = {}
+for v in bots: res[round(v % UNIT, 1) % UNIT] = res.get(round(v % UNIT, 1) % UNIT, 0) + 1
+r0 = max(res, key=res.get)  # most parts sit on this half-plate phase
+base = r0 + math.floor((min(b['low'] for b in blocks) - r0) / UNIT + 1e-3) * UNIT  # under every part, on that phase
 for b in blocks:
     bottom = b['T'][1] - b['h'] * UNIT / 2 - base
     if 'i' in b:
@@ -105,7 +129,7 @@ for b in blocks:
     b['bottom'] = bottom
     if 'level' not in b:  # free part: keep the full transform (LDU, model space, three.js axes)
         b['m'] = [round(v, 5) for v in b['R']] + [round(v, 3) for v in b['T']]
-    for k in ('R', 'T', 'h'): b.pop(k)
+    for k in ('R', 'T', 'h', 'low'): b.pop(k)
 blocks.sort(key=lambda b: (b['step'], b['bottom']))
 if nsteps > 0:
     groups = {}

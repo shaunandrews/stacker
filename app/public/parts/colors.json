@@ -180,9 +180,51 @@
   "alpha": 0.5019607843137255
  },
  {
+  "code": 6,
+  "name": "Brown",
+  "hex": "#543324",
+  "alpha": 1
+ },
+ {
   "code": 7,
   "name": "Light Grey",
   "hex": "#8a928d",
+  "alpha": 1
+ },
+ {
+  "code": 8,
+  "name": "Dark Grey",
+  "hex": "#545955",
+  "alpha": 1
+ },
+ {
+  "code": 40,
+  "name": "Trans Brown",
+  "hex": "#635f52",
+  "alpha": 0.5019607843137255
+ },
+ {
+  "code": 41,
+  "name": "Trans Medium Blue",
+  "hex": "#559ab7",
+  "alpha": 0.5019607843137255
+ },
+ {
+  "code": 57,
+  "name": "Trans Orange",
+  "hex": "#f08f1c",
+  "alpha": 0.5019607843137255
+ },
+ {
+  "code": 79,
+  "name": "Milky White",
+  "hex": "#eeeeee",
+  "alpha": 0.9411764705882353
+ },
+ {
+  "code": 179,
+  "name": "Pearl Silver",
+  "hex": "#898788",
   "alpha": 1
  },
  {

@@ -98,6 +98,10 @@ const apply = (M, x, y, z) => [
   M[8] * x + M[9] * y + M[10] * z + M[11],
 ];
 
+// Parts with a field of studs (baseplates, big plates) use LDraw's 8-sided studs.
+const MANY_STUDS = 64;
+let lowStuds = false;
+
 // color: 16 = the part's main color (tinted at runtime); anything else is fixed.
 function flatten(name, M, invert, tris, color = 16, studs = null) {
   const lines = load(name);
@@ -125,7 +129,8 @@ function flatten(name, M, invert, tris, color = 16, studs = null) {
         studs.push({ at: apply(child, 0, 0, 0), tip: apply(child, 0, -4, 0) });
       }
       if (SKIP.some((re) => re.test(base))) continue;
-      flatten(L.file, child, inv, tris, L.color === 16 || L.color === 24 ? color : L.color, studs);
+      const file = lowStuds && /^stud\d*[a-z]?\.dat$/.test(base) && index.has(`8/${base}`) ? `8/${base}` : L.file;
+      flatten(file, child, inv, tris, L.color === 16 || L.color === 24 ? color : L.color, studs);
     } else {
       const p = L.p;
       const v = [];
@@ -156,11 +161,18 @@ const seen = new Set();
 const parts = [...special, ...selection, ...extra, ...minifig.parts].filter((p) => !seen.has(p.id) && seen.add(p.id));
 
 for (const part of parts) {
-  const tris = [];
-  const studs = [];
+  let tris = [];
+  let studs = [];
+  lowStuds = false;
   if (!flatten(`${part.id}.dat`, IDENTITY, false, tris, 16, studs) || tris.length === 0) {
     console.warn('skip (missing)', part.id);
     continue;
+  }
+  if (studs.length > MANY_STUDS) {
+    lowStuds = true;
+    tris = [];
+    studs = [];
+    flatten(`${part.id}.dat`, IDENTITY, false, tris, 16, studs);
   }
   // LDraw bounds (y down; the part's top surface is normally y = 0, studs above it).
   let [x0, y0, z0, x1, y1, z1] = [Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity];

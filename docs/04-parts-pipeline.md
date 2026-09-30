@@ -59,6 +59,7 @@ For each part:
 1. **Flatten.** Resolve the part's sub-files and primitives recursively (case-insensitive lookup across `parts/`, `parts/s/`, `p/`, `p/48/`, `p/8/`), composing 3×4 transforms.
 2. **Winding.** Honor LDraw BFC: `CERTIFY`, `CW`/`CCW`, `INVERTNEXT`, and negative-determinant flips. Uncertified files emit both sides.
 3. **Skip hidden detail.** Underside tubes (`stud4*`, `stud3*`, `stud2a*`, `stud6/10/12/16*`) are dropped — roughly halves triangle counts; you rarely see a brick's underside.
+   Parts with more than 64 studs (baseplates, big plates) are rebuilt with LDraw's 8-sided studs (`p/8/`).
 4. **Colors.** Color 16 (and edge color 24) inherit the main color; anything else is a fixed color baked per vertex.
 5. **Footprint & height.** From the bounding box: `w = x-extent / 20`, `d = z-extent / 20` studs; top = 0 unless the part starts above its stud (then the nearest 4 LDU); `h = (bottom − top) / 4` half plates. Overrides from `minifigs.json` pin minifig parts to 2×1 with exact heights.
 6. **Axes.** LDraw is −Y up; rotate 180° about X (`y → −y, z → −z`) into three.js axes, and center the geometry on its footprint and height.
