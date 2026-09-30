@@ -141,6 +141,8 @@ const SLIDERS: SliderDef[] = [
   { id: 'shadowSoft', label: 'Shadow softness', min: 0, max: 6, step: 0.25, fmt: (v) => v.toFixed(2) },
   { id: 'plate', label: 'Plate brightness', min: 0.2, max: 1.6, step: 0.05, fmt: pct },
   { id: 'foveation', label: 'Foveation', min: 0, max: 1, step: 0.05, fmt: pct },
+  // Render resolution vs the headset's default; WebXR only takes it when a session starts.
+  { id: 'resolution', label: 'Resolution (next XR entry)', min: 0.8, max: 1.6, step: 0.05, fmt: (v) => `${v.toFixed(2)}×` },
 ];
 
 /** Slider values a style implies. */
@@ -160,6 +162,7 @@ function styleValues(k: number): Record<string, number> {
     shadowSoft: st.softness,
     plate: 1,
     foveation: 1,
+    resolution: 1.3,
   };
 }
 const LOOK_VERSION = 2; // bump when stored look settings stop meaning the same thing
@@ -562,16 +565,26 @@ export class StackerSystem extends createSystem({}) {
       this.input.xr.multiPointers[hand].toggleSubPointer('touch', false);
     }
     this.createLights();
+    // Before anything loads: a session can start while parts are still downloading.
+    const look = this.readStore('stacker.look') as { visual?: Record<string, number> } | null;
+    this.renderer.xr.setFramebufferScaleFactor(look?.visual?.resolution ?? styleValues(0).resolution);
 
     const onSessionStart = () => {
       this.renderer.xr.setFoveation(this.visual.foveation);
       const session = this.renderer.xr.getSession();
+      if (session && typeof XRWebGLLayer !== 'undefined') {
+        console.info(`[stacker] framebuffer scale ${this.visual.resolution} (native ${XRWebGLLayer.getNativeFramebufferScaleFactor(session)})`);
+      }
       const rates = session?.supportedFrameRates;
       if (session && rates && Array.from(rates).includes(120)) {
         void session.updateTargetFrameRate(120).then(() => this.redrawUi());
       }
     };
     this.renderer.xr.addEventListener('sessionstart', onSessionStart);
+    // The next session picks up a resolution changed while this one ran.
+    const onSessionEnd = () => this.renderer.xr.setFramebufferScaleFactor(this.visual.resolution);
+    this.renderer.xr.addEventListener('sessionend', onSessionEnd);
+    this.cleanupFuncs.push(() => this.renderer.xr.removeEventListener('sessionend', onSessionEnd));
 
     this.desktop = new DesktopControls(this.renderer.domElement);
     const onDesktop = (ev: Event) => {
@@ -865,6 +878,7 @@ export class StackerSystem extends createSystem({}) {
       this.plateMat.color.set(st.plate).multiplyScalar(v.plate);
     }
     if (this.renderer.xr.isPresenting) this.renderer.xr.setFoveation(v.foveation);
+    else this.renderer.xr.setFramebufferScaleFactor(v.resolution);
     if (this.root) this.aimKeyLight();
   }
 

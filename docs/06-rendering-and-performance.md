@@ -14,6 +14,7 @@ Target: **120 Hz on Quest 3** where possible (72/90 fallback), with builds of 1,
 | **Trimmed geometry** — underside tubes removed at conversion | `build-parts.mjs` |
 | **Plate studs** are one `InstancedMesh` (up to 64 × 64) | `updatePlate` |
 | **Foveated rendering** on session start (slider, default 1 = max) | `onSessionStart`, `applyVisuals` |
+| **Render resolution** 1.3× by default, set before each session (Resolution slider) — the main sharpness lever; trade it against fps on the headset | `init`, `applyVisuals` |
 | **Static shadows** — the shadow map redraws only on change | `update`, `fitShadow` |
 | **120 Hz requested** when supported; the Hz button cycles rates | `onSessionStart` |
 | Unused IWSDK features off: physics, grabbing, scene understanding, spatial UI, depth sensing, plane/mesh detection, anchors | `iwsdk.config.json` |
@@ -71,6 +72,7 @@ Six presets (`STYLES` in `look.ts`) set environment, backdrop, lights, shadows, 
 | Shadow softness | 0–6 | Penumbra width (≈1.2 mm per step) |
 | Plate brightness | 0.2–1.6 | Baseplate color multiplier |
 | Foveation | 0–1 | `renderer.xr.setFoveation` |
+| Resolution | 0.8–1.6× (default 1.3) | `renderer.xr.setFramebufferScaleFactor` — applies on the next XR entry (WebXR only reads it when a session starts). IWSDK never sets it, so without this Quest Browser renders below the panel's native 2064×2208 per eye. The session start logs the native factor |
 
 ## Perf budget notes
 
