@@ -100,6 +100,7 @@ The House was found with the default coverage search. The Go-Kart and Robot came
 
 ## Licensing
 
+- **Stacker's code:** GPL-3.0-or-later (`LICENSE`).
 - **LDraw parts:** CC BY 4.0 (some older parts CCAL 2.0). Attribution is shown on the library panel and in `app/public/CREDITS.txt`.
 - **OMR models** (kits): CCAL 2.0, credited per model.
 - **Rebrickable data:** used as reference for part selection; not redistributed.
