@@ -85,7 +85,7 @@ Starting a kit (a box, or Library → Kits → a kit):
 
 ### Shelf
 
-A tray to the right of the platform, tilted toward you, with a grab bar and a "Title · step n of N" label. Pieces are laid out in rows spaced by their real size, and stay attached to the tray as you move it until you pick them up.
+A tray to the right of the platform (or where the box was opened), tilted toward you, with a grab bar and a "Title · step n of N" label. Pieces are laid out in rows spaced by their real size — anything bigger than 7.5 cm (baseplates) shrunk to fit, full size again once picked up — and stay attached to the tray as you move it until you pick them up.
 
 ### Instructions modes (Settings → Guide)
 
@@ -106,6 +106,7 @@ The magnet stays on in every mode, so free parts can still be placed.
 - This step's parts float just above their spots along their own up axis, with dashed arrows down into place
 - Small models are framed whole; once the model is much bigger than the step, the view zooms to the step's parts
 - Pages are rendered by the same throwaway WebGL context as the box art (`ArtRenderer.renderIso`), kept while the manual is open
+- **−/+** zoom the page in on the step's parts (1×, 1.7×, 2.8×, 4.5×); line weight follows how big a stud is drawn, bold up close and fine when everything's small. Pages render at 2048 px wide.
 - ◀ / ▶ page freely; the middle button jumps back to the step you're on; it follows along automatically when you complete a step
 
 Large sets with steps spread across the model (Fire Station) still render small; the pages are only as good as the model's authored steps.

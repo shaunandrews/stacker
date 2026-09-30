@@ -107,6 +107,8 @@ const KITS: KitInfo[] = [
 const TAB_NAMES = [...TABS, 'Kits', 'Saves'];
 const SHELF_W = 0.34;
 const SHELF_D = 0.16;
+const MANUAL_ZOOM = [1, 1.7, 2.8, 4.5];
+const SHELF_FIT = 0.075; // big pieces (baseplates) sit on the shelf shrunk to this size
 // Kit box rack: two shelves of boxes, fronts facing the user.
 const RACK_W = 0.64;
 const RACK_TIER = 0.155;
@@ -369,6 +371,7 @@ interface KitState {
   steps: KitBlock[][];
   step: number;
   page: number;
+  zoom: number; // manual page zoom level (index into MANUAL_ZOOM)
   di: number;
   dj: number;
   remaining: Array<{ rec: Placed; ghost: Entity }>;
@@ -1425,6 +1428,10 @@ export class StackerSystem extends createSystem({}) {
         return this.kit ? `${this.kit.title} · step ${this.kit.page + 1} of ${this.kit.steps.length}` : '';
       case 'man:here':
         return this.kit && this.kit.page !== this.kit.step ? `Now: step ${this.kit.step + 1}` : 'Current step';
+      case 'man:zoomin':
+        return '+';
+      case 'man:zoomout':
+        return '−';
     }
     if (item.kind === 'slider') {
       const def = SLIDERS.find((d) => `slider:${d.id}` === item.id)!;
@@ -1723,6 +1730,14 @@ export class StackerSystem extends createSystem({}) {
         break;
       case 'man:here':
         if (this.kit) this.showPage(this.kit.step);
+        break;
+      case 'man:zoomin':
+      case 'man:zoomout':
+        if (this.kit) {
+          const z = this.kit.zoom + (id === 'man:zoomin' ? 1 : -1);
+          this.kit.zoom = Math.max(0, Math.min(MANUAL_ZOOM.length - 1, z));
+          this.showPage(this.kit.page);
+        }
         break;
     }
     this.redrawUi();
@@ -3260,6 +3275,7 @@ export class StackerSystem extends createSystem({}) {
     this.tick(0.3);
     const blocks = new Set(pieces.map((p) => p.block));
     this.shelfItems = this.shelfItems.filter((s) => !blocks.has(s.block));
+    for (const b of blocks) b.mesh.scale.setScalar(this.scale); // shelf-shrunk pieces come off full size
     const anchor = pieces[0].block.mesh;
     this.q1.copy(anchor.quaternion).invert();
     for (const p of pieces) {
@@ -3637,6 +3653,7 @@ export class StackerSystem extends createSystem({}) {
       steps: data.steps,
       step: 0,
       page: 0,
+      zoom: 0,
       di: Math.round((this.bounds.x0 + this.bounds.x1) / 2 - (minI + maxI) / 2),
       dj: Math.round((this.bounds.z0 + this.bounds.z1) / 2 - (minJ + maxJ) / 2),
       remaining: [],
@@ -3818,17 +3835,19 @@ export class StackerSystem extends createSystem({}) {
     const titleY = p.h / 2 - MARGIN - 0.014;
     this.addUi(p, 'man:title', 'label', 0, 0, titleY, inner, 0.028);
     const y = -p.h / 2 + MARGIN + 0.013;
-    this.addUi(p, 'man:prev', 'button', 0, -inner / 2 + 0.03, y, 0.06, 0.026);
-    this.addUi(p, 'man:here', 'button', 0, 0, y, 0.12, 0.026);
-    this.addUi(p, 'man:next', 'button', 0, inner / 2 - 0.03, y, 0.06, 0.026);
+    this.addUi(p, 'man:prev', 'button', 0, -inner / 2 + 0.028, y, 0.056, 0.026);
+    this.addUi(p, 'man:zoomout', 'button', 0, -0.078, y, 0.036, 0.026);
+    this.addUi(p, 'man:here', 'button', 0, 0, y, 0.108, 0.026);
+    this.addUi(p, 'man:zoomin', 'button', 0, 0.078, y, 0.036, 0.026);
+    this.addUi(p, 'man:next', 'button', 0, inner / 2 - 0.028, y, 0.056, 0.026);
     // The page itself: a sheet of paper each step is drawn on.
     const top = titleY - 0.014 - GAP;
     const bottom = y + 0.013 + GAP;
     const ph = top - bottom;
     if (!this.pageCanvas) {
       this.pageCanvas = document.createElement('canvas');
-      this.pageCanvas.width = 1024;
-      this.pageCanvas.height = Math.round((1024 * ph) / inner);
+      this.pageCanvas.width = 2048;
+      this.pageCanvas.height = Math.round((2048 * ph) / inner);
       this.pageTex = new CanvasTexture(this.pageCanvas);
       this.pageTex.colorSpace = SRGBColorSpace;
       this.pageTex.anisotropy = 4;
@@ -3859,19 +3878,20 @@ export class StackerSystem extends createSystem({}) {
     const ink = '#1d1f24';
     this.manualArt ??= new ArtRenderer();
     const art = this.manualArt;
+    const px = W / 1024; // stroke sizes are tuned at 1024 wide
     ctx.fillStyle = '#f7f1e3';
     ctx.fillRect(0, 0, W, H);
     ctx.strokeStyle = ink;
-    ctx.lineWidth = 5;
+    ctx.lineWidth = 5 * px;
     ctx.beginPath();
-    ctx.roundRect(12, 12, W - 24, H - 24, 22);
+    ctx.roundRect(12 * px, 12 * px, W - 24 * px, H - 24 * px, 22 * px);
     ctx.stroke();
 
     // Circled step number
     const r = W * 0.075;
     const nx = W * 0.05 + r;
     const ny = W * 0.05 + r;
-    ctx.lineWidth = 6;
+    ctx.lineWidth = 6 * px;
     ctx.beginPath();
     ctx.arc(nx, ny, r, 0, Math.PI * 2);
     ctx.stroke();
@@ -3906,9 +3926,9 @@ export class StackerSystem extends createSystem({}) {
     const by = W * 0.05;
     ctx.fillStyle = '#cfe3f3';
     ctx.strokeStyle = ink;
-    ctx.lineWidth = 3;
+    ctx.lineWidth = 3 * px;
     ctx.beginPath();
-    ctx.roundRect(bx, by, bw, bh, 14);
+    ctx.roundRect(bx, by, bw, bh, 14 * px);
     ctx.fill();
     ctx.stroke();
     entries.forEach((e, k) => {
@@ -3970,33 +3990,43 @@ export class StackerSystem extends createSystem({}) {
     if (!step.isEmpty() && all.getSize(new Vector3()).length() > Math.max(0.14, stepSize * 3)) {
       frame = step.clone().expandByScalar(Math.max(0.02, stepSize * 0.25));
     }
+    // Zoomed in: a smaller window around this step's parts.
+    const zoom = MANUAL_ZOOM[kit.zoom] ?? 1;
+    if (zoom > 1) {
+      const center = step.isEmpty() ? frame.getCenter(new Vector3()) : step.getCenter(new Vector3());
+      frame = new Box3().setFromCenterAndSize(center, frame.getSize(new Vector3()).divideScalar(zoom));
+    }
+    // Lines scale with how big a stud is drawn: bold up close, fine when everything's tiny.
+    const studPx = (dims.pitch * (W - 60)) / Math.max(1e-3, frame.getSize(new Vector3()).length() * 0.8);
+    this.inkMat.linewidth = Math.min(9, Math.max(1.4, studPx * 0.11));
+    this.inkLightMat.linewidth = this.inkMat.linewidth * 0.8;
     const image = art.renderIso(model, W - 60, areaH, frame);
     ctx.drawImage(image, 30, top);
     // Dashed arrows from each lifted part down to its spot.
     ctx.strokeStyle = ink;
     ctx.fillStyle = ink;
-    ctx.lineWidth = 5;
+    ctx.lineWidth = 5 * px;
     for (const [from, to] of arrows.slice(0, 10)) {
       const [x0, y0] = art.project(from);
       const [x1, y1] = art.project(to);
       const len = Math.hypot(x1 - x0, y1 - y0);
-      if (len < 18) continue;
+      if (len < 18 * (W / 1024)) continue;
       const ax = 30 + x0;
       const ay = top + y0;
       const bx2 = 30 + x1;
       const by2 = top + y1;
       const ux = (bx2 - ax) / len;
       const uy = (by2 - ay) / len;
-      ctx.setLineDash([12, 9]);
+      ctx.setLineDash([12 * px, 9 * px]);
       ctx.beginPath();
       ctx.moveTo(ax, ay);
-      ctx.lineTo(bx2 - ux * 18, by2 - uy * 18);
+      ctx.lineTo(bx2 - ux * 18 * px, by2 - uy * 18 * px);
       ctx.stroke();
       ctx.setLineDash([]);
       ctx.beginPath();
       ctx.moveTo(bx2, by2);
-      ctx.lineTo(bx2 - ux * 24 - uy * 13, by2 - uy * 24 + ux * 13);
-      ctx.lineTo(bx2 - ux * 24 + uy * 13, by2 - uy * 24 - ux * 13);
+      ctx.lineTo(bx2 - (ux * 24 + uy * 13) * px, by2 + (-uy * 24 + ux * 13) * px);
+      ctx.lineTo(bx2 - (ux * 24 - uy * 13) * px, by2 + (-uy * 24 - ux * 13) * px);
       ctx.closePath();
       ctx.fill();
     }
@@ -4045,7 +4075,11 @@ export class StackerSystem extends createSystem({}) {
     if (!c) {
       const g = new Group();
       this.addInked(g, part, color, new Matrix4());
-      c = this.manualArt!.renderIso(g, 200, 160);
+      const width = this.inkMat.linewidth;
+      this.inkMat.linewidth = this.inkLightMat.linewidth = 3;
+      c = this.manualArt!.renderIso(g, 400, 320);
+      this.inkMat.linewidth = width;
+      this.inkLightMat.linewidth = width * 0.8;
       this.thumbs.set(key, c);
     }
     return c;
@@ -4149,15 +4183,18 @@ export class StackerSystem extends createSystem({}) {
     let rowDepth = 0;
     for (const it of items) {
       const def = this.lib.parts[it.part];
-      const w = Math.max(def.w * dims.pitch * S, 0.012);
-      const d = Math.max(def.d * dims.pitch * S, 0.012);
+      // Anything bigger than the shelf can show is shrunk to fit; it's full size once picked up.
+      const fit = Math.min(1, SHELF_FIT / (Math.max(def.w, def.d) * dims.pitch * S));
+      const w = Math.max(def.w * dims.pitch * S * fit, 0.012);
+      const d = Math.max(def.d * dims.pitch * S * fit, 0.012);
       if (x + w > SHELF_W / 2 - 0.01 && x > -SHELF_W / 2 + 0.02) {
         x = -SHELF_W / 2 + 0.015;
         z += rowDepth + gap;
         rowDepth = 0;
       }
-      const pos = new Vector3(x + w / 2, (def.h * dims.unit * S) / 2 + 0.002, z + d / 2);
+      const pos = new Vector3(x + w / 2, (def.h * dims.unit * S * fit) / 2 + 0.002, z + d / 2);
       const block = this.spawnLoose(it.part, it.color, pos, this.q1.identity(), 0);
+      block.mesh.scale.setScalar(S * fit);
       this.shelfItems.push({ block, pos });
       kit.spawned.push(block);
       x += w + gap;
