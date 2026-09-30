@@ -1,0 +1,183 @@
+[
+ {
+  "id": "87087",
+  "name": "Brick Special 1 x 1 with Stud on 1 Side",
+  "tab": "Special"
+ },
+ {
+  "id": "11211",
+  "name": "Brick Special 1 x 2 with 2 Studs on 1 Side",
+  "tab": "Special"
+ },
+ {
+  "id": "30414",
+  "name": "Brick Special 1 x 4 with 4 Studs on One Side",
+  "tab": "Special"
+ },
+ {
+  "id": "26604",
+  "name": "Brick Special 1 x 1 with Studs on 2 Adjacent Sides",
+  "tab": "Special"
+ },
+ {
+  "id": "4733",
+  "name": "Brick Special 1 x 1 Studs on 4 Sides",
+  "tab": "Special"
+ },
+ {
+  "id": "32952",
+  "name": "Brick Special 1 x 1 x 1 2/3 with Studs on 1 Side",
+  "tab": "Special"
+ },
+ {
+  "id": "4070",
+  "name": "Brick Special 1 x 1 with Headlight",
+  "tab": "Special"
+ },
+ {
+  "id": "99780",
+  "name": "Bracket 1 x 2 - 1 x 2 Inverted",
+  "tab": "Special"
+ },
+ {
+  "id": "99781",
+  "name": "Bracket 1 x 2 - 1 x 2",
+  "tab": "Special"
+ },
+ {
+  "id": "99207",
+  "name": "Bracket 1 x 2 - 2 x 2 Inverted",
+  "tab": "Special"
+ },
+ {
+  "id": "44728",
+  "name": "Bracket 1 x 2 - 2 x 2",
+  "tab": "Special"
+ },
+ {
+  "id": "3937",
+  "name": "Hinge Brick 1 x 2 Base",
+  "tab": "Special",
+  "joint": {
+   "pair": "hinge-1x2",
+   "role": "base"
+  }
+ },
+ {
+  "id": "3938",
+  "name": "Hinge Brick 1 x 2 Top Plate Thin",
+  "tab": "Special",
+  "joint": {
+   "pair": "hinge-1x2",
+   "role": "top"
+  }
+ },
+ {
+  "id": "2429",
+  "name": "Hinge Plate 1 x 4 Swivel Base with Hole",
+  "tab": "Special",
+  "joint": {
+   "pair": "hinge-plate-1x4",
+   "role": "base"
+  }
+ },
+ {
+  "id": "2430",
+  "name": "Hinge Plate 1 x 4 Swivel Top [Solid Pin]",
+  "tab": "Special",
+  "joint": {
+   "pair": "hinge-plate-1x4",
+   "role": "top"
+  }
+ },
+ {
+  "id": "3830",
+  "name": "Hinge Brick 1 x 4 [Upper]",
+  "tab": "Special",
+  "joint": {
+   "pair": "hinge-brick-1x4",
+   "role": "top"
+  }
+ },
+ {
+  "id": "3831",
+  "name": "Hinge Brick 1 x 4 [Lower]",
+  "tab": "Special",
+  "joint": {
+   "pair": "hinge-brick-1x4",
+   "role": "base"
+  }
+ },
+ {
+  "id": "3680",
+  "name": "Turntable 2 x 2 Plate, Base",
+  "tab": "Special",
+  "joint": {
+   "pair": "turntable-2x2",
+   "role": "base"
+  }
+ },
+ {
+  "id": "3679",
+  "name": "Turntable 2 x 2 Plate - Top",
+  "tab": "Special",
+  "joint": {
+   "pair": "turntable-2x2",
+   "role": "top"
+  }
+ },
+ {
+  "id": "60592",
+  "name": "60592",
+  "tab": "Windows",
+  "joint": {
+   "pair": "window-1x2x2",
+   "role": "base"
+  }
+ },
+ {
+  "id": "60601",
+  "name": "Glass for Window 1x2x2",
+  "tab": "Windows",
+  "joint": {
+   "pair": "window-1x2x2",
+   "role": "top"
+  }
+ },
+ {
+  "id": "60593",
+  "name": "60593",
+  "tab": "Windows",
+  "joint": {
+   "pair": "window-1x2x3",
+   "role": "base"
+  }
+ },
+ {
+  "id": "60602",
+  "name": "Glass for Window 1x2x3",
+  "tab": "Windows",
+  "joint": {
+   "pair": "window-1x2x3",
+   "role": "top"
+  }
+ },
+ {
+  "id": "60594",
+  "name": "60594",
+  "tab": "Windows",
+  "joint": {
+   "pair": "window-1x4x3",
+   "role": "base"
+  }
+ },
+ {
+  "id": "60603",
+  "name": "Glass for Window 1x4x3",
+  "tab": "Windows",
+  "joint": {
+   "pair": "window-1x4x3",
+   "role": "top"
+  }
+ }
+]

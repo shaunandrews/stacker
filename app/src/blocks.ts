@@ -14,7 +14,7 @@ import {
 export const dims = { pitch: 0.008, unit: 0.0016, ldu: 0.0004 };
 // dims.unit is one height step: half a plate (4 LDU), so minifigs share the grid.
 
-export const TABS = ['Bricks', 'Plates', 'Tiles', 'Slopes', 'Curves', 'Round', 'Wedges', 'Windows', 'Minifigs', 'More'];
+export const TABS = ['Bricks', 'Plates', 'Tiles', 'Slopes', 'Curves', 'Round', 'Wedges', 'Windows', 'Special', 'Minifigs', 'More'];
 
 export interface PartDef {
   id: string;
@@ -26,6 +26,8 @@ export interface PartDef {
   center: [number, number, number]; // baked geometry center in the part's LDraw coordinates
   fixed: boolean; // has fixed-color regions (printed faces, yellow hands)
   overlap?: boolean; // hats and hair: no collision
+  conn?: number[][]; // [type (0 stud, 1 socket), x, y, z, ax, ay, az] in LDU, baked frame
+  joint?: { pair: string; role: 'base' | 'top'; o: [number, number, number] };
   offset: number;
   vertices: number;
   indices: number;

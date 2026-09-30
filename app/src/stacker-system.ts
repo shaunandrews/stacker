@@ -57,8 +57,10 @@ const HAND_REACH = 0.028;
 const PINCH_ON = 0.018;
 const PINCH_OFF = 0.035;
 const HOLD_DIST = 0.08;
-const HOLD_MIN = 0.04;
-const HOLD_MAX = 0.6;
+const CELL = 0.016; // connector hash cell (2 studs)
+const FACING = -0.77; // connectors must face each other within ~40°
+const DROP_STEPS = [0, 0.012, 0.024, 0.036, 0.048]; // world meters a held block may settle down onto studs
+const NO_DROP = [0];
 const RAY_MAX = 4;
 const FOLLOW_CTRL = 40;
 const FOLLOW_HAND = 22;
@@ -149,15 +151,10 @@ type Tool = 'build' | 'select' | 'paint';
 type PanelId = 'library' | 'settings' | 'manual';
 type FrameKind = 'platform' | 'shelf' | PanelId;
 
+/** Where a block sits: a full transform in platform-local (unscaled) meters. */
 interface Placement {
-  i: number;
-  j: number;
-  level: number;
-  turns: number;
-  fw: number;
-  fd: number;
-  m?: Matrix4;
-  target?: Placed;
+  m: Matrix4;
+  target?: Placed; // kit ghost this placement fills
 }
 
 interface Placed extends Placement {
@@ -183,12 +180,23 @@ interface Loose {
 
 interface Piece {
   block: Loose;
-  d2x: number;
-  d2z: number;
-  dl: number;
-  turns: number;
-  offPos: Vector3;
+  offPos: Vector3; // pose relative to the anchor (pieces[0])
   offQuat: Quaternion;
+}
+
+/** A stud (type 0) or socket (type 1) on a placed block — or a baseplate stud (rec null). */
+interface Conn {
+  rec: Placed | null;
+  type: number;
+  p: Vector3; // platform-local position
+  a: Vector3; // direction it faces (out of the stud / out of the socket)
+}
+
+interface PartConns {
+  male: Array<{ p: Vector3; a: Vector3 }>;
+  female: Array<{ p: Vector3; a: Vector3 }>;
+  joint: { pair: string; role: string; o: Vector3 } | null;
+  body: { c: Vector3; h: Vector3 }; // collision box (studs trimmed off the top)
 }
 
 interface Panel {
@@ -251,9 +259,7 @@ interface HandState {
   pieces: Piece[] | null;
   holdButton: Btn | null;
   fromSelection: boolean;
-  holdDist: number;
-  holdYaw: number;
-  holdYawTarget: number;
+  rotTarget: Quaternion; // controller: where the held block's rotation is easing to
   painting: boolean;
   slider: UiItem | null;
   frame: FrameKind | null;
@@ -332,7 +338,10 @@ export class StackerSystem extends createSystem({}) {
   private edges: Object3D[] = [];
   private corners: Object3D[] = [];
   private batches = new Map<string, Batch>();
-  private occupancy = new Map<number, Placed>();
+  private pconn: PartConns[] = [];
+  private connIndex = new Map<number, Conn[]>();
+  private recConns = new Map<Placed, Array<[number, Conn]>>();
+  private near: Conn[] = [];
   private placedRecs: Placed[] = [];
   private levelAnim: { from: Quaternion; to: Quaternion; t: number } | null = null;
 
@@ -392,6 +401,9 @@ export class StackerSystem extends createSystem({}) {
   private q1!: Quaternion;
   private q2!: Quaternion;
   private m1!: Matrix4;
+  private m2!: Matrix4;
+  private axA = [new Vector3(), new Vector3(), new Vector3()];
+  private axB = [new Vector3(), new Vector3(), new Vector3()];
   private euler!: Euler;
   private up!: Vector3;
   private one!: Vector3;
@@ -406,6 +418,7 @@ export class StackerSystem extends createSystem({}) {
     this.q1 = new Quaternion();
     this.q2 = new Quaternion();
     this.m1 = new Matrix4();
+    this.m2 = new Matrix4();
     this.euler = new Euler();
     this.up = new Vector3(0, 1, 0);
     this.one = new Vector3(1, 1, 1);
@@ -459,6 +472,7 @@ export class StackerSystem extends createSystem({}) {
         this.instructions = v.instructions ?? 'ghosts';
       }
       this.makeMaterials();
+      this.buildConnTables();
       this.hands = HANDS.map((hand) => this.createHand(hand));
       this.buildPlatform();
       this.library = this.createPanel('library', 0.32, 0.46, true);
@@ -1304,50 +1318,160 @@ export class StackerSystem extends createSystem({}) {
 
   // ================================================================ placed blocks
 
-  private cellKey(i: number, j: number, level: number): number {
-    return (level * 256 + (j + 128)) * 256 + (i + 128);
+
+
+  /** Per-part connectors and collision boxes, in unscaled meters. */
+  private buildConnTables(): void {
+    const L = dims.ldu;
+    this.pconn = this.lib.parts.map((def, i) => {
+      const male: Array<{ p: Vector3; a: Vector3 }> = [];
+      const female: Array<{ p: Vector3; a: Vector3 }> = [];
+      for (const [t, x, y, z, ax, ay, az] of def.conn ?? []) {
+        (t === 0 ? male : female).push({ p: new Vector3(x * L, y * L, z * L), a: new Vector3(ax, ay, az).normalize() });
+      }
+      const joint = def.joint ? { pair: def.joint.pair, role: def.joint.role, o: new Vector3(...def.joint.o).multiplyScalar(L) } : null;
+      const bb = this.lib.geometries[i].boundingBox!;
+      const min = bb.min.clone();
+      const max = bb.max.clone();
+      if (male.some((c) => c.a.y > 0.9)) max.y -= 4 * L; // studs poke into whatever sits on top
+      min.addScalar(0.8 * L); // touching isn't overlapping
+      max.addScalar(-0.8 * L);
+      const h = max.clone().sub(min).multiplyScalar(0.5).max(new Vector3(1e-4, 1e-4, 1e-4));
+      return { male, female, joint, body: { c: min.add(max).multiplyScalar(0.5), h } };
+    });
   }
 
-  private isFree(i0: number, j0: number, fw: number, fd: number, level: number, h: number): boolean {
-    for (let l = level; l < level + h; l++) {
-      for (let i = i0; i < i0 + fw; i++) {
-        for (let j = j0; j < j0 + fd; j++) {
-          if (this.occupancy.has(this.cellKey(i, j, l))) return false;
+  private hashKey(x: number, y: number, z: number): number {
+    return ((Math.floor(x / CELL) + 512) * 1024 + (Math.floor(y / CELL) + 512)) * 1024 + (Math.floor(z / CELL) + 512);
+  }
+
+  /** Add or remove a placed block's studs and sockets in the spatial index. */
+  private indexConns(rec: Placed, add: boolean): void {
+    if (!add) {
+      for (const [key, c] of this.recConns.get(rec) ?? []) {
+        const list = this.connIndex.get(key);
+        const k = list ? list.indexOf(c) : -1;
+        if (k >= 0) list!.splice(k, 1);
+        if (list && !list.length) this.connIndex.delete(key);
+      }
+      this.recConns.delete(rec);
+      return;
+    }
+    const pc = this.pconn[rec.part];
+    const rot = new Quaternion().setFromRotationMatrix(rec.m);
+    const entries: Array<[number, Conn]> = [];
+    for (const [type, list] of [
+      [0, pc.male],
+      [1, pc.female],
+    ] as const) {
+      for (const c of list) {
+        const conn: Conn = { rec, type, p: c.p.clone().applyMatrix4(rec.m), a: c.a.clone().applyQuaternion(rot) };
+        const key = this.hashKey(conn.p.x, conn.p.y, conn.p.z);
+        let cell = this.connIndex.get(key);
+        if (!cell) this.connIndex.set(key, (cell = []));
+        cell.push(conn);
+        entries.push([key, conn]);
+      }
+    }
+    this.recConns.set(rec, entries);
+  }
+
+  /** Connectors of a type within r of p (platform-local), including baseplate studs. */
+  private connsNear(p: Vector3, type: number, r: number, out: Conn[]): Conn[] {
+    out.length = 0;
+    const r2 = r * r;
+    for (let x = Math.floor((p.x - r) / CELL); x <= Math.floor((p.x + r) / CELL); x++) {
+      for (let y = Math.floor((p.y - r) / CELL); y <= Math.floor((p.y + r) / CELL); y++) {
+        for (let z = Math.floor((p.z - r) / CELL); z <= Math.floor((p.z + r) / CELL); z++) {
+          const cell = this.connIndex.get(((x + 512) * 1024 + (y + 512)) * 1024 + (z + 512));
+          if (cell) for (const c of cell) if (c.type === type && c.p.distanceToSquared(p) <= r2) out.push(c);
         }
+      }
+    }
+    if (type === 0 && Math.abs(p.y) < r) {
+      const P = dims.pitch;
+      const { x0, x1, z0, z1 } = this.bounds;
+      const i = Math.floor(p.x / P);
+      const j = Math.floor(p.z / P);
+      if (i >= x0 && i < x1 && j >= z0 && j < z1) {
+        const stud = new Vector3((i + 0.5) * P, 0, (j + 0.5) * P);
+        if (stud.distanceToSquared(p) <= r2) out.push({ rec: null, type: 0, p: stud, a: this.up });
+      }
+    }
+    return out;
+  }
+
+  /** Separating-axis test between two oriented boxes. */
+  private obbOverlap(ca: Vector3, A: Vector3[], ha: Vector3, cb: Vector3, B: Vector3[], hb: Vector3): boolean {
+    const t = this.v6.copy(cb).sub(ca);
+    const aH = [ha.x, ha.y, ha.z];
+    const bH = [hb.x, hb.y, hb.z];
+    const R: number[][] = [[], [], []];
+    const AR: number[][] = [[], [], []];
+    for (let i = 0; i < 3; i++) {
+      for (let j = 0; j < 3; j++) {
+        R[i][j] = A[i].dot(B[j]);
+        AR[i][j] = Math.abs(R[i][j]) + 1e-6;
+      }
+    }
+    const T = [t.dot(A[0]), t.dot(A[1]), t.dot(A[2])];
+    for (let i = 0; i < 3; i++) {
+      if (Math.abs(T[i]) > aH[i] + bH[0] * AR[i][0] + bH[1] * AR[i][1] + bH[2] * AR[i][2]) return false;
+    }
+    for (let j = 0; j < 3; j++) {
+      const tj = T[0] * R[0][j] + T[1] * R[1][j] + T[2] * R[2][j];
+      if (Math.abs(tj) > bH[j] + aH[0] * AR[0][j] + aH[1] * AR[1][j] + aH[2] * AR[2][j]) return false;
+    }
+    for (let i = 0; i < 3; i++) {
+      const i1 = (i + 1) % 3;
+      const i2 = (i + 2) % 3;
+      for (let j = 0; j < 3; j++) {
+        const j1 = (j + 1) % 3;
+        const j2 = (j + 2) % 3;
+        const ra = aH[i1] * AR[i2][j] + aH[i2] * AR[i1][j];
+        const rb = bH[j1] * AR[i][j2] + bH[j2] * AR[i][j1];
+        if (Math.abs(T[i2] * R[i1][j] - T[i1] * R[i2][j]) > ra + rb) return false;
       }
     }
     return true;
   }
 
-  private collides(part: number, p: Placement): boolean {
-    return !p.m && !this.lib.parts[part].overlap;
+  private axesOf(m: Matrix4, out: Vector3[]): Vector3[] {
+    out[0].setFromMatrixColumn(m, 0).normalize();
+    out[1].setFromMatrixColumn(m, 1).normalize();
+    out[2].setFromMatrixColumn(m, 2).normalize();
+    return out;
   }
 
-  private setCells(rec: Placed, value: Placed | null): void {
-    if (!this.collides(rec.part, rec)) return;
-    const h = this.lib.parts[rec.part].h;
-    for (let l = rec.level; l < rec.level + h; l++) {
-      for (let i = rec.i; i < rec.i + rec.fw; i++) {
-        for (let j = rec.j; j < rec.j + rec.fd; j++) {
-          const key = this.cellKey(i, j, l);
-          if (value) this.occupancy.set(key, value);
-          else if (this.occupancy.get(key) === rec) this.occupancy.delete(key);
-        }
-      }
-    }
-  }
-
-  private placedCenter(rec: Placement & { part: number }, out: Vector3): Vector3 {
-    if (rec.m) return out.setFromMatrixPosition(rec.m);
+  /** Would this part at this pose overlap a placed block or sink into the plate? */
+  private bodyCollides(part: number, m: Matrix4, candidates: Placed[]): boolean {
+    if (this.lib.parts[part].overlap) return false;
+    const body = this.pconn[part].body;
+    const ca = this.v4.copy(body.c).applyMatrix4(m);
+    const A = this.axesOf(m, this.axA);
     const P = dims.pitch;
-    return out.set((rec.i + rec.fw / 2) * P, (rec.level + this.lib.parts[rec.part].h / 2) * dims.unit, (rec.j + rec.fd / 2) * P);
+    const { x0, x1, z0, z1 } = this.bounds;
+    const down = Math.abs(A[0].y) * body.h.x + Math.abs(A[1].y) * body.h.y + Math.abs(A[2].y) * body.h.z;
+    if (ca.y - down < -0.0004 && ca.x > x0 * P && ca.x < x1 * P && ca.z > z0 * P && ca.z < z1 * P) return true;
+    const ra = body.h.length();
+    const cb = this.v5;
+    for (const rec of candidates) {
+      if (this.lib.parts[rec.part].overlap) continue;
+      const b = this.pconn[rec.part].body;
+      cb.copy(b.c).applyMatrix4(rec.m);
+      if (cb.distanceTo(ca) > ra + b.h.length()) continue;
+      if (this.obbOverlap(ca, A, body.h, cb, this.axesOf(rec.m, this.axB), b.h)) return true;
+    }
+    return false;
   }
 
-  private localMatrix(rec: Placement & { part: number }, out: Matrix4): Matrix4 {
-    if (rec.m) return out.copy(rec.m);
-    this.placedCenter(rec, this.v3);
-    this.q2.setFromAxisAngle(this.up, (rec.turns * Math.PI) / 2);
-    return out.compose(this.v3, this.q2, this.one);
+  /** Platform-local (unscaled) center of a placement. */
+  private placedCenter(rec: Placement, out: Vector3): Vector3 {
+    return out.setFromMatrixPosition(rec.m);
+  }
+
+  private localMatrix(rec: Placement, out: Matrix4): Matrix4 {
+    return out.copy(rec.m);
   }
 
   private batchFor(rec: Placed): Batch {
@@ -1395,9 +1519,9 @@ export class StackerSystem extends createSystem({}) {
     rec.slot = batch.records.length;
     batch.records.push(rec);
     batch.mesh.count = batch.records.length;
-    if (rec.m) rec.mi = rec.m.clone().invert();
+    rec.mi = rec.m.clone().invert();
     this.writeInstance(batch, rec);
-    this.setCells(rec, rec);
+    this.indexConns(rec, true);
     this.placedRecs.push(rec);
     this.dirty = true;
   }
@@ -1412,7 +1536,7 @@ export class StackerSystem extends createSystem({}) {
       this.writeInstance(batch, last);
     }
     batch.mesh.count = batch.records.length;
-    this.setCells(rec, null);
+    this.indexConns(rec, false);
     const k = this.placedRecs.indexOf(rec);
     if (k >= 0) this.placedRecs.splice(k, 1);
     this.selection.delete(rec);
@@ -1429,7 +1553,8 @@ export class StackerSystem extends createSystem({}) {
       b.records.length = 0;
       b.mesh.count = 0;
     }
-    this.occupancy.clear();
+    this.connIndex.clear();
+    this.recConns.clear();
     this.placedRecs = [];
     this.selection.clear();
     this.dirty = true;
@@ -1445,20 +1570,32 @@ export class StackerSystem extends createSystem({}) {
     }
   }
 
+  /** Stud-grid extent of everything placed, so the plate can't shrink out from under it. */
   private placedExtent(): { minI: number; maxI: number; minJ: number; maxJ: number } {
+    const P = dims.pitch;
     const e = { minI: Infinity, maxI: -Infinity, minJ: Infinity, maxJ: -Infinity };
     for (const r of this.placedRecs) {
-      if (r.m) continue;
-      e.minI = Math.min(e.minI, r.i);
-      e.maxI = Math.max(e.maxI, r.i + r.fw);
-      e.minJ = Math.min(e.minJ, r.j);
-      e.maxJ = Math.max(e.maxJ, r.j + r.fd);
+      const c = this.v3.setFromMatrixPosition(r.m);
+      const h = this.pconn[r.part].body.h;
+      const rad = Math.hypot(h.x, h.z);
+      e.minI = Math.min(e.minI, Math.floor((c.x - rad) / P));
+      e.maxI = Math.max(e.maxI, Math.ceil((c.x + rad) / P));
+      e.minJ = Math.min(e.minJ, Math.floor((c.z - rad) / P));
+      e.maxJ = Math.max(e.maxJ, Math.ceil((c.z + rad) / P));
     }
     return e;
   }
 
-  private makeRec(part: number, color: number, p: Placement): Placed {
-    return { part, color, i: p.i, j: p.j, level: p.level, turns: p.turns, fw: p.fw, fd: p.fd, m: p.m, slot: -1, batch: '' };
+  private makeRec(part: number, color: number, m: Matrix4, target?: Placed): Placed {
+    return { part, color, m, target, slot: -1, batch: '' };
+  }
+
+  /** Transform for a block on the stud grid: cell (i, j), height in half plates, quarter turns. */
+  private gridMatrix(part: number, i: number, j: number, level: number, turns: number): Matrix4 {
+    const P = dims.pitch;
+    const [fw, fd] = this.footprint(part, turns);
+    const center = new Vector3((i + fw / 2) * P, (level + this.lib.parts[part].h / 2) * dims.unit, (j + fd / 2) * P);
+    return new Matrix4().compose(center, new Quaternion().setFromAxisAngle(this.up, (turns * Math.PI) / 2), this.one);
   }
 
   private footprint(part: number, turns: number): [number, number] {
@@ -1502,15 +1639,11 @@ export class StackerSystem extends createSystem({}) {
     }
   }
 
-  private placedWorldPose(rec: Placement & { part: number }, outPos: Vector3, outQuat: Quaternion): void {
+  private placedWorldPose(rec: Placement, outPos: Vector3, outQuat: Quaternion): void {
     const r = this.root.object3D!;
     r.localToWorld(this.placedCenter(rec, outPos));
-    if (rec.m) {
-      this.q2.setFromRotationMatrix(this.m1.copy(rec.m));
-      outQuat.copy(r.quaternion).multiply(this.q2);
-    } else {
-      outQuat.copy(r.quaternion).multiply(this.q2.setFromAxisAngle(this.up, (rec.turns * Math.PI) / 2));
-    }
+    this.q2.setFromRotationMatrix(this.m1.copy(rec.m));
+    outQuat.copy(r.quaternion).multiply(this.q2);
   }
 
   private figurePieces(preset: number, base: Vector3): Piece[] {
@@ -1535,91 +1668,163 @@ export class StackerSystem extends createSystem({}) {
       const dl = Math.round((feet - bottom) / 4);
       const y = (dl + h / 2 - info[0].h / 2) * u;
       const block = this.spawnLoose(part, this.colorOf(code), this.v1.set(0, y, 0).applyQuaternion(q).add(base), q);
-      return { block, d2x: 0, d2z: 0, dl, turns: 0, offPos: new Vector3(), offQuat: new Quaternion() };
+      return { block, offPos: new Vector3(), offQuat: new Quaternion() };
     });
   }
 
   // ================================================================ snapping
 
+  /**
+   * Where would the carried pieces land? Kit pieces jump into a matching ghost.
+   * Otherwise every stud and socket on the carried pieces looks for a facing socket or
+   * stud nearby (on the plate, on top of, under, or beside placed blocks). Each pairing
+   * proposes a pose — connectors aligned, spun to the nearest quarter turn — and the
+   * pose that engages the most connectors without overlapping anything wins.
+   * Fills this.snapOut (one transform per piece).
+   */
   private computeSnap(pieces: Piece[]): boolean {
-    const P = dims.pitch;
-    const u = dims.unit;
     const s = this.scale;
-    const a = pieces[0];
-    const aDef = this.lib.parts[a.block.part];
     const r = this.root.object3D!;
-    const local = r.worldToLocal(this.v4.copy(a.block.mesh.position));
+    r.updateMatrixWorld(true);
+    const inv = this.m2.copy(r.matrixWorld).invert();
     const out = this.snapOut;
     out.length = 0;
+    const cur = pieces.map((p) =>
+      new Matrix4().compose(p.block.mesh.position, p.block.mesh.quaternion, new Vector3(s, s, s)).premultiply(inv),
+    );
+    const anchor = new Vector3().setFromMatrixPosition(cur[0]);
 
     if (this.kit && pieces.length === 1) {
-      const target = this.nearestTarget(a.block, local);
-      if (target && this.placedCenter(target, this.v3).distanceTo(local) < GHOST_PULL / s) {
-        out.push({ i: target.i, j: target.j, level: target.level, turns: target.turns, fw: target.fw, fd: target.fd, m: target.m, target });
+      const target = this.nearestTarget(pieces[0].block, anchor);
+      if (target && this.placedCenter(target, this.v3).distanceTo(anchor) < GHOST_PULL / s) {
+        out.push({ m: target.m, target });
         return true;
       }
     }
 
-    const { x0, x1, z0, z1 } = this.bounds;
-    const margin = 0.02 / s;
-    if (local.x < x0 * P - margin || local.x > x1 * P + margin) return false;
-    if (local.z < z0 * P - margin || local.z > z1 * P + margin) return false;
-    if (local.y < -margin || local.y > MAX_LEVEL * u) return false;
+    const reach = Math.min(CELL, Math.max(dims.pitch * 1.2, 0.02 / s));
+    const cands: Array<{ D: Matrix4; score: number }> = [];
+    const P = new Vector3();
+    const Q = new Vector3();
+    const A = new Vector3();
+    const q = new Quaternion();
+    pieces.forEach((piece, k) => {
+      const pc = this.pconn[piece.block.part];
+      q.setFromRotationMatrix(cur[k]);
+      for (const [type, list] of [
+        [0, pc.male],
+        [1, pc.female],
+      ] as const) {
+        for (const c of list) {
+          P.copy(c.p).applyMatrix4(cur[k]);
+          A.copy(c.a).applyQuaternion(q);
+          // Downward-facing sockets also look a few centimeters below, as if the block
+          // had been let go and settled onto whatever studs are underneath.
+          const drops = type === 1 && A.y < -0.7 ? DROP_STEPS : NO_DROP;
+          for (const drop of drops) {
+            Q.copy(P).y -= drop / s;
+            for (const t of this.connsNear(Q, 1 - type, reach, this.near)) {
+              const facing = A.dot(t.a);
+              if (facing > FACING) continue;
+              cands.push({ D: this.alignTransform(P, A, cur[k], t), score: P.distanceTo(t.p) / dims.pitch + (1 + facing) * 2 });
+            }
+          }
+        }
+      }
+      // Paired parts (hinge halves, turntables, window glass) go exactly onto their partner.
+      if (pc.joint?.role === 'top') {
+        const here = new Vector3().setFromMatrixPosition(cur[k]);
+        for (const rec of this.placedRecs) {
+          const bj = this.pconn[rec.part].joint;
+          if (!bj || bj.role !== 'base' || bj.pair !== pc.joint.pair) continue;
+          const target = new Matrix4().makeTranslation(bj.o.x - pc.joint.o.x, bj.o.y - pc.joint.o.y, bj.o.z - pc.joint.o.z).premultiply(rec.m);
+          const dist = this.v3.setFromMatrixPosition(target).distanceTo(here);
+          if (dist > reach * 2) continue;
+          cands.push({ D: target.multiply(cur[k].clone().invert()), score: dist / dims.pitch - 2 });
+        }
+      }
+    });
+    if (!cands.length) return false;
 
-    this.q1.copy(r.quaternion).invert().multiply(a.block.mesh.quaternion);
-    const turnsNow = ((Math.round(this.yawOf(this.q1) / (Math.PI / 2)) % 4) + 4) % 4;
-    const k = (turnsNow - a.turns + 4) % 4;
-    const [afw, afd] = this.footprint(a.block.part, turnsNow);
-    let ai = Math.round(local.x / P - afw / 2);
-    let aj = Math.round(local.z / P - afd / 2);
-    if (pieces.length === 1) {
-      ai = Math.min(x1 - afw, Math.max(x0, ai));
-      aj = Math.min(z1 - afd, Math.max(z0, aj));
+    cands.sort((a, b) => a.score - b.score);
+    // Only blocks near the carried pieces can collide with them.
+    const nearby = this.placedRecs.filter((rec) => this.v3.setFromMatrixPosition(rec.m).distanceTo(anchor) < 0.25);
+    let best: Matrix4[] | null = null;
+    let bestScore = -Infinity;
+    const tried: Matrix4[] = [];
+    for (const cand of cands) {
+      if (tried.length >= 16) break;
+      if (tried.some((d) => this.sameTransform(d, cand.D))) continue;
+      tried.push(cand.D);
+      const mats = cur.map((m) => m.clone().premultiply(cand.D));
+      if (mats.some((m, k) => this.bodyCollides(pieces[k].block.part, m, nearby))) continue;
+      const score = this.countEngaged(pieces, mats) * 2 - cand.score;
+      if (score > bestScore) {
+        bestScore = score;
+        best = mats;
+      }
     }
-    let minDl = 0;
-    const solid: boolean[] = [];
-    const heights: number[] = [];
-    for (const p of pieces) {
-      let rx = p.d2x;
-      let rz = p.d2z;
-      for (let n = 0; n < k; n++) [rx, rz] = [rz, -rx];
-      const turns = (p.turns + k) % 4;
-      const [fw, fd] = this.footprint(p.block.part, turns);
-      const i = Math.round((2 * ai + afw + rx - fw) / 2);
-      const j = Math.round((2 * aj + afd + rz - fd) / 2);
-      if (i < x0 || i + fw > x1 || j < z0 || j + fd > z1) return false;
-      out.push({ i, j, level: p.dl, turns, fw, fd });
-      minDl = Math.min(minDl, p.dl);
-      solid.push(!this.lib.parts[p.block.part].overlap);
-      heights.push(this.lib.parts[p.block.part].h);
-    }
-    const fits = (L: number) =>
-      out.every((o, n) => L + o.level >= 0 && (!solid[n] || this.isFree(o.i, o.j, o.fw, o.fd, L + o.level, heights[n])));
-    const bottomFree = (L: number) =>
-      out.every((o, n) => L + o.level >= 0 && (!solid[n] || this.isFree(o.i, o.j, o.fw, o.fd, L + o.level, 1)));
-    const touchesAbove = (L: number) =>
-      out.some((o, n) => solid[n] && !this.isFree(o.i, o.j, o.fw, o.fd, L + o.level + heights[n], 1));
-    const base = Math.max(-minDl, Math.round(local.y / u - aDef.h / 2));
-    const center = (L: number) => (L + aDef.h / 2) * u;
-
-    // Resting: nudge up out of any collision, then drop onto support.
-    let down: number | null = base;
-    for (let tries = 0; down !== null && !fits(down); tries++) down = tries > 6 ? null : down + 1;
-    if (down !== null) while (down + minDl > 0 && bottomFree(down - 1)) down--;
-    // Hanging: rise until the top touches the underside of something.
-    let upL: number | null = null;
-    if (fits(base)) {
-      let L = base;
-      for (let n = 0; n < 12 && !touchesAbove(L) && fits(L + 1); n++) L++;
-      if (touchesAbove(L)) upL = L;
-    }
-    const reach = SNAP_DROP / s;
-    const dDown = down === null ? Infinity : Math.abs(local.y - center(down));
-    const dUp = upL === null ? Infinity : Math.abs(local.y - center(upL));
-    if (Math.min(dDown, dUp) > reach) return false;
-    const L = dUp < dDown ? upL! : down!;
-    for (const o of out) o.level += L;
+    if (!best) return false;
+    for (const m of best) out.push({ m });
     return true;
+  }
+
+  /**
+   * The rigid move that puts connector (P, A) of a carried piece onto target t: turn A to
+   * face t, spin about t's axis to the nearest quarter turn of t's block, then translate.
+   */
+  private alignTransform(P: Vector3, A: Vector3, cur: Matrix4, t: Conn): Matrix4 {
+    const axis = t.a;
+    const q1 = new Quaternion().setFromUnitVectors(A, axis.clone().negate());
+    const refT = this.refAxis(t.rec ? t.rec.m : null, axis, new Vector3());
+    const refH = this.refAxis(cur, axis.clone().applyQuaternion(q1.clone().invert()), new Vector3()).applyQuaternion(q1);
+    refH.addScaledVector(axis, -refH.dot(axis)).normalize();
+    const angle = Math.atan2(new Vector3().crossVectors(refH, refT).dot(axis), refH.dot(refT));
+    const snapped = Math.round(angle / (Math.PI / 2)) * (Math.PI / 2);
+    const R = new Quaternion().setFromAxisAngle(axis, angle - snapped).multiply(q1);
+    return new Matrix4()
+      .makeTranslation(t.p.x, t.p.y, t.p.z)
+      .multiply(new Matrix4().makeRotationFromQuaternion(R))
+      .multiply(new Matrix4().makeTranslation(-P.x, -P.y, -P.z));
+  }
+
+  /** A block axis (x, then z, then y) projected flat against `axis`, for quarter-turn snapping. */
+  private refAxis(m: Matrix4 | null, axis: Vector3, out: Vector3): Vector3 {
+    for (const k of [0, 2, 1]) {
+      if (m) out.setFromMatrixColumn(m, k).normalize();
+      else out.set(k === 0 ? 1 : 0, k === 1 ? 1 : 0, k === 2 ? 1 : 0);
+      out.addScaledVector(axis, -out.dot(axis));
+      if (out.lengthSq() > 0.25) return out.normalize();
+    }
+    return out.set(1, 0, 0);
+  }
+
+  private sameTransform(a: Matrix4, b: Matrix4): boolean {
+    for (let k = 0; k < 16; k++) if (Math.abs(a.elements[k] - b.elements[k]) > 2e-4) return false;
+    return true;
+  }
+
+  /** How many carried connectors sit exactly on a facing connector at these poses. */
+  private countEngaged(pieces: Piece[], mats: Matrix4[]): number {
+    let n = 0;
+    const P = new Vector3();
+    const A = new Vector3();
+    const q = new Quaternion();
+    pieces.forEach((piece, k) => {
+      const pc = this.pconn[piece.block.part];
+      q.setFromRotationMatrix(mats[k]);
+      for (const [type, list] of [
+        [0, pc.male],
+        [1, pc.female],
+      ] as const) {
+        for (const c of list) {
+          P.copy(c.p).applyMatrix4(mats[k]);
+          A.copy(c.a).applyQuaternion(q);
+          if (this.connsNear(P, 1 - type, 0.0006, this.near).some((t) => A.dot(t.a) < -0.95)) n++;
+        }
+      }
+    });
+    return n;
   }
 
   /** The closest unfilled kit ghost for this piece (same part and color). */
@@ -1692,9 +1897,7 @@ export class StackerSystem extends createSystem({}) {
       pieces: null,
       holdButton: null,
       fromSelection: false,
-      holdDist: HOLD_DIST,
-      holdYaw: 0,
-      holdYawTarget: 0,
+      rotTarget: new Quaternion(),
       painting: false,
       slider: null,
       frame: null,
@@ -1979,22 +2182,14 @@ export class StackerSystem extends createSystem({}) {
     const ext = this.v5;
     const dl = this.v6;
     for (const rec of this.placedRecs) {
+      this.halfExtents(rec.part, ext);
+      lo2.copy(o).applyMatrix4(rec.mi!);
       let sc: number;
-      if (rec.m) {
-        this.halfExtents(rec.part, ext);
-        lo2.copy(o).applyMatrix4(rec.mi!);
-        if (far) {
-          dl.copy(d).transformDirection(rec.mi!);
-          sc = this.rayBox(lo2, dl, ext.x, ext.y, ext.z);
-        } else sc = this.boxDist(lo2, ext.x, ext.y, ext.z);
-      } else {
-        this.placedCenter(rec, c);
-        const hx = (rec.fw * P) / 2;
-        const hy = (this.lib.parts[rec.part].h * u) / 2;
-        const hz = (rec.fd * P) / 2;
-        lo2.copy(o).sub(c);
-        sc = far ? this.rayBox(lo2, d, hx, hy, hz) : this.boxDist(lo2, hx, hy, hz);
-      }
+      if (far) {
+        dl.copy(d).transformDirection(rec.mi!);
+        // transformDirection normalizes; rescale t back into platform units
+        sc = this.rayBox(lo2, dl, ext.x, ext.y, ext.z);
+      } else sc = this.boxDist(lo2, ext.x, ext.y, ext.z);
       sc *= s;
       if (sc < limit && (!best || sc < best.score)) best = { kind: 'placed', placed: rec, score: sc };
     }
@@ -2194,49 +2389,19 @@ export class StackerSystem extends createSystem({}) {
   }
 
   private holdPlaced(h: HandState, btn: Btn, anchor: Placed, group: Placed[], duplicate: boolean): void {
-    const recs = [anchor, ...group.filter((r) => r !== anchor && !r.m)];
-    const pieces: Piece[] = [];
-    const a2x = 2 * anchor.i + anchor.fw;
-    const a2z = 2 * anchor.j + anchor.fd;
-    for (const rec of recs) {
+    const recs = [anchor, ...group.filter((r) => r !== anchor)];
+    const pieces: Piece[] = recs.map((rec) => {
       this.placedWorldPose(rec, this.v1, this.q1);
-      const block = this.spawnLoose(rec.part, rec.color, this.v1, this.q1);
-      pieces.push({
-        block,
-        d2x: 2 * rec.i + rec.fw - a2x,
-        d2z: 2 * rec.j + rec.fd - a2z,
-        dl: rec.level - anchor.level,
-        turns: rec.turns,
-        offPos: new Vector3(),
-        offQuat: new Quaternion(),
-      });
-    }
-    if (anchor.m) {
-      pieces.length = 1;
-      pieces[0].turns = this.turnsOf(pieces[0].block.mesh.quaternion);
-    }
+      return { block: this.spawnLoose(rec.part, rec.color, this.v1, this.q1), offPos: new Vector3(), offQuat: new Quaternion() };
+    });
     h.fromSelection = group.length > 1 || this.selection.has(anchor);
     if (!duplicate) for (const rec of recs) this.removePlaced(rec);
     this.startHold(h, btn, pieces, h.targetFar);
   }
 
-  private turnsOf(q: Quaternion): number {
-    this.q1.copy(this.root.object3D!.quaternion).invert().multiply(q);
-    return ((Math.round(this.yawOf(this.q1) / (Math.PI / 2)) % 4) + 4) % 4;
-  }
-
   private holdLoose(h: HandState, btn: Btn, blocks: Loose[], far: boolean): void {
-    const pieces = blocks.map((block) => ({
-      block,
-      d2x: 0,
-      d2z: 0,
-      dl: 0,
-      turns: this.turnsOf(block.mesh.quaternion),
-      offPos: new Vector3(),
-      offQuat: new Quaternion(),
-    }));
     h.fromSelection = false;
-    this.startHold(h, btn, pieces, far);
+    this.startHold(h, btn, blocks.map((block) => ({ block, offPos: new Vector3(), offQuat: new Quaternion() })), far);
   }
 
   private startHold(h: HandState, btn: Btn, pieces: Piece[], far: boolean): void {
@@ -2253,15 +2418,12 @@ export class StackerSystem extends createSystem({}) {
       p.offPos.copy(p.block.mesh.position).sub(anchor.position).applyQuaternion(this.q1);
       p.block.mesh.castShadow = !this.lib.isTrans(p.block.color);
     }
-    if (h.mode === 'controller') {
-      h.holdDist = HOLD_DIST;
-      h.holdYaw = h.holdYawTarget = pieces[0].turns * (Math.PI / 2);
-    } else {
-      this.q1.copy(h.quat).invert();
-      h.offsetQuat.copy(this.q1).multiply(anchor.quaternion);
-      if (far) h.offsetPos.set(0, 0, 0);
-      else h.offsetPos.copy(anchor.position).sub(h.point).applyQuaternion(this.q1);
-    }
+    // Held like a real object: the block keeps its rotation relative to the hand.
+    this.q1.copy(h.quat).invert();
+    h.offsetQuat.copy(this.q1).multiply(anchor.quaternion);
+    h.rotTarget.copy(h.offsetQuat);
+    if (far) h.offsetPos.set(0, 0, 0);
+    else h.offsetPos.copy(anchor.position).sub(h.point).applyQuaternion(this.q1);
   }
 
   private holdPieces(h: HandState, delta: number): void {
@@ -2271,14 +2433,16 @@ export class StackerSystem extends createSystem({}) {
     if (h.mode === 'controller') {
       const pad = this.input.xr.gamepads[h.hand];
       if (pad) {
-        if (pad.getAxesEnteringLeft(InputComponent.Thumbstick)) h.holdYawTarget += Math.PI / 2;
-        if (pad.getAxesEnteringRight(InputComponent.Thumbstick)) h.holdYawTarget -= Math.PI / 2;
-        const y = pad.getAxesValues(InputComponent.Thumbstick)?.y ?? 0;
-        if (Math.abs(y) > 0.25) h.holdDist = Math.min(HOLD_MAX, Math.max(HOLD_MIN, h.holdDist - y * delta * 0.4));
+        // Thumbstick: left/right spins the block a quarter turn about up; up/down tips it.
+        if (pad.getAxesEnteringLeft(InputComponent.Thumbstick)) this.turnHeld(h, 'spin', 1);
+        if (pad.getAxesEnteringRight(InputComponent.Thumbstick)) this.turnHeld(h, 'spin', -1);
+        if (pad.getAxesEnteringUp(InputComponent.Thumbstick)) this.turnHeld(h, 'tip', -1);
+        if (pad.getAxesEnteringDown(InputComponent.Thumbstick)) this.turnHeld(h, 'tip', 1);
       }
-      h.holdYaw += (h.holdYawTarget - h.holdYaw) * (1 - Math.exp(-delta * 18));
-      this.v1.copy(h.rayOrigin).addScaledVector(h.rayDir, h.holdDist);
-      this.q1.copy(this.root.object3D!.quaternion).multiply(this.q2.setFromAxisAngle(this.up, h.holdYaw));
+      h.offsetQuat.slerp(h.rotTarget, 1 - Math.exp(-delta * 18));
+      this.v1.copy(h.rayOrigin).addScaledVector(h.rayDir, HOLD_DIST);
+      if (h.offsetPos.lengthSq() > 0) this.v1.copy(h.offsetPos).applyQuaternion(h.quat).add(h.point);
+      this.q1.copy(h.quat).multiply(h.offsetQuat);
       rate = FOLLOW_CTRL;
     } else {
       this.v1.copy(h.offsetPos).applyQuaternion(h.quat).add(h.point);
@@ -2315,11 +2479,25 @@ export class StackerSystem extends createSystem({}) {
       this.snapOut.forEach((o, k) => {
         const g = this.ghostFor(h, k);
         g.geometry = this.lib.geometries[pieces[k].block.part];
-        this.placedWorldPose({ ...o, part: pieces[k].block.part }, g.position, g.quaternion);
+        this.placedWorldPose(o, g.position, g.quaternion);
         g.scale.setScalar(this.scale);
         g.visible = true;
       });
     }
+  }
+
+  /** Quarter-turn the held block: spin about the platform's up axis, or tip about the controller's side axis. */
+  private turnHeld(h: HandState, how: 'spin' | 'tip', dir: number): void {
+    const angle = (dir * Math.PI) / 2;
+    if (how === 'spin') {
+      const upAxis = this.v2.set(0, 1, 0).applyQuaternion(this.root.object3D!.quaternion);
+      const w = new Quaternion().setFromAxisAngle(upAxis, angle);
+      // world-space turn, expressed in the controller's frame
+      h.rotTarget.premultiply(new Quaternion().copy(h.quat).invert().multiply(w).multiply(h.quat));
+    } else {
+      h.rotTarget.premultiply(new Quaternion().setFromAxisAngle(this.v2.set(1, 0, 0), angle));
+    }
+    this.tick(0.2);
   }
 
   private ghostFor(h: HandState, k: number): Mesh {
@@ -2344,14 +2522,9 @@ export class StackerSystem extends createSystem({}) {
       return;
     }
     if (this.computeSnap(pieces)) {
-      const recs = this.snapOut.map((o, k) => {
-        const rec = this.makeRec(pieces[k].block.part, pieces[k].block.color, o);
-        if (o.target) (rec as Placed & { target?: Placed }).target = o.target;
-        return rec;
-      });
+      const recs = this.snapOut.map((o, k) => this.makeRec(pieces[k].block.part, pieces[k].block.color, o.m, o.target));
       if (h.fromSelection) this.selection.clear();
       recs.forEach((rec, k) => {
-        this.setCells(rec, rec);
         const m = pieces[k].block.mesh;
         this.snaps.push({ block: pieces[k].block, rec, fromPos: m.position.clone(), fromQuat: m.quaternion.clone(), t: 0 });
         if (h.fromSelection) this.selection.add(rec);
@@ -2561,9 +2734,9 @@ export class StackerSystem extends createSystem({}) {
       const [r0, r1, r2, r3, r4, r5, r6, r7, r8, tx, ty, tz] = b.m;
       const L = dims.ldu;
       const m = new Matrix4().set(r0, r1, r2, tx * L + kit.di * dims.pitch, r3, r4, r5, ty * L, r6, r7, r8, tz * L + kit.dj * dims.pitch, 0, 0, 0, 1);
-      return this.makeRec(part, color, { i: 0, j: 0, level: 0, turns: 0, fw: 1, fd: 1, m });
+      return this.makeRec(part, color, m);
     }
-    return this.makeRec(part, color, { i: b.i! + kit.di, j: b.j! + kit.dj, level: b.level!, turns: b.turns!, fw: b.fw!, fd: b.fd! });
+    return this.makeRec(part, color, this.gridMatrix(part, b.i! + kit.di, b.j! + kit.dj, b.level!, b.turns!));
   }
 
   private edgeGeo(part: number): BufferGeometry {
@@ -2607,20 +2780,26 @@ export class StackerSystem extends createSystem({}) {
     const kit = this.kit;
     if (!kit) return;
     kit.stepPlaced.push(rec);
-    const aimed = (rec as Placed & { target?: Placed }).target;
-    let k = aimed ? kit.remaining.findIndex((r) => r.rec === aimed) : -1;
-    if (k < 0) {
-      k = kit.remaining.findIndex(({ rec: g }) => {
-        if (g.m || g.part !== rec.part || g.color !== rec.color || g.i !== rec.i || g.j !== rec.j || g.level !== rec.level) return false;
-        if (g.fw !== rec.fw || g.fd !== rec.fd) return false;
-        return isSymmetric(this.lib.parts[g.part]) ? true : g.turns === rec.turns;
-      });
-    }
+    let k = rec.target ? kit.remaining.findIndex((r) => r.rec === rec.target) : -1;
+    if (k < 0) k = kit.remaining.findIndex(({ rec: g }) => this.samePlacement(g, rec));
     if (k < 0) return;
     kit.matched.set(rec, kit.remaining[k].rec);
     kit.remaining[k].ghost.destroy();
     kit.remaining.splice(k, 1);
     if (kit.remaining.length === 0) this.nextStep();
+  }
+
+  /** Same part, color and pose — allowing the quarter/half turns a symmetric part can't tell apart. */
+  private samePlacement(g: Placed, rec: Placed): boolean {
+    if (g.part !== rec.part || g.color !== rec.color) return false;
+    if (this.v1.setFromMatrixPosition(g.m).distanceTo(this.v2.setFromMatrixPosition(rec.m)) > 0.0005) return false;
+    const dq = new Quaternion().setFromRotationMatrix(g.m).invert().multiply(new Quaternion().setFromRotationMatrix(rec.m));
+    if (2 * Math.acos(Math.min(1, Math.abs(dq.w))) < 0.17) return true;
+    const def = this.lib.parts[g.part];
+    if (!isSymmetric(def) || this.v3.set(0, 1, 0).applyQuaternion(dq).y < 0.98) return false;
+    const yaw = 2 * Math.atan2(dq.y, dq.w);
+    const step = def.w === def.d ? Math.PI / 2 : Math.PI;
+    return Math.abs(yaw - Math.round(yaw / step) * step) < 0.17;
   }
 
   private nextStep(): void {
@@ -2915,15 +3094,16 @@ export class StackerSystem extends createSystem({}) {
 
   private serialize(): object {
     return {
-      v: 3,
+      v: 4,
       scale: this.scale,
       bounds: this.bounds,
       library: { w: this.library.w, h: this.library.h },
-      blocks: this.placedRecs.map((r) => {
-        const id = this.lib.parts[r.part].id;
-        const code = this.lib.colors[r.color].code;
-        return r.m ? [id, code, 'm', ...r.m.elements.map((v) => Math.round(v * 1e5) / 1e5)] : [id, code, r.i, r.j, r.level, r.turns];
-      }),
+      blocks: this.placedRecs.map((r) => [
+        this.lib.parts[r.part].id,
+        this.lib.colors[r.color].code,
+        'm',
+        ...r.m.elements.map((v) => Math.round(v * 1e5) / 1e5),
+      ]),
     };
   }
 
@@ -2953,14 +3133,13 @@ export class StackerSystem extends createSystem({}) {
       if (part === undefined) continue;
       const color = this.colorOf(code);
       if (row[2] === 'm') {
-        const m = new Matrix4().fromArray(row.slice(3) as number[]);
-        this.addPlaced(this.makeRec(part, color, { i: 0, j: 0, level: 0, turns: 0, fw: 1, fd: 1, m }));
+        this.addPlaced(this.makeRec(part, color, new Matrix4().fromArray(row.slice(3) as number[])));
         continue;
       }
+      // v2/v3 saves stored grid cells (v2 counted height in plates, v3 in half plates).
       const [, , i, j, level, turns] = row as [string, number, number, number, number, number];
       const lvl = (d.v ?? 2) < 3 ? level * 2 : level;
-      const [fw, fd] = this.footprint(part, turns);
-      this.addPlaced(this.makeRec(part, color, { i, j, level: lvl, turns, fw, fd }));
+      this.addPlaced(this.makeRec(part, color, this.gridMatrix(part, i, j, lvl, turns)));
     }
     this.redrawUi((u) => u.kind === 'slider');
   }
@@ -3009,7 +3188,7 @@ export class StackerSystem extends createSystem({}) {
       let depth = 0;
       this.lib.parts.forEach((def, part) => {
         if (def.tab !== tab || x + def.w > this.bounds.x1 || z + def.d > this.bounds.z1) return;
-        this.addPlaced(this.makeRec(part, n++ % 24, { i: x, j: z, level: 0, turns: 0, fw: def.w, fd: def.d }));
+        this.addPlaced(this.makeRec(part, n++ % 24, this.gridMatrix(part, x, z, 0, 0)));
         x += def.w + 1;
         depth = Math.max(depth, def.d);
       });
@@ -3026,7 +3205,7 @@ export class StackerSystem extends createSystem({}) {
     for (let level = 0; level < h * 6; level += h) {
       for (let i = x0; i + 2 <= x1; i += 2) {
         for (let j = z0; j + 2 <= z1; j += 2) {
-          this.addPlaced(this.makeRec(part, (i + j + level) & 15, { i, j, level, turns: 0, fw: 2, fd: 2 }));
+          this.addPlaced(this.makeRec(part, (i + j + level) & 15, this.gridMatrix(part, i, j, level, 0)));
         }
       }
     }

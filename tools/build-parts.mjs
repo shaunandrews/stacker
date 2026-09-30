@@ -20,6 +20,7 @@ const OUT = path.join(ROOT, 'app/public/parts');
 const selection = JSON.parse(fs.readFileSync(path.join(ROOT, 'tools/selection.json'), 'utf8'));
 const extra = JSON.parse(fs.readFileSync(path.join(ROOT, 'tools/kit-parts.json'), 'utf8')).parts;
 const minifig = JSON.parse(fs.readFileSync(path.join(ROOT, 'tools/minifigs.json'), 'utf8'));
+const special = JSON.parse(fs.readFileSync(path.join(ROOT, 'tools/special-parts.json'), 'utf8'));
 const UNIT = 4; // LDU per height step (half a plate)
 
 // LDraw color table, for parts with fixed-color regions (printed faces, yellow hands).
@@ -28,6 +29,9 @@ for (const line of fs.readFileSync(path.join(LDRAW, 'LDConfig.ldr'), 'latin1').s
   const m = line.match(/CODE\s+(\d+)\s+VALUE\s+#([0-9A-Fa-f]{6})/);
   if (m) ldColors.set(Number(m[1]), m[2]);
 }
+
+// Studs you can attach to. Their transforms become connectors (position + direction).
+const MALE = /^stud(2|2a|2s|2s2|2s2e|6a|10|15|17a)?\.dat$/;
 
 // Underside detail nobody sees while building; dropping it roughly halves triangles.
 const SKIP = [/^stud4/, /^stud3/, /^stud2a/, /^stud10/, /^stud12/, /^stud6/, /^stud16/];
@@ -92,7 +96,7 @@ const apply = (M, x, y, z) => [
 ];
 
 // color: 16 = the part's main color (tinted at runtime); anything else is fixed.
-function flatten(name, M, invert, tris, color = 16) {
+function flatten(name, M, invert, tris, color = 16, studs = null) {
   const lines = load(name);
   if (!lines) return false;
   let ccw = true;
@@ -112,8 +116,13 @@ function flatten(name, M, invert, tris, color = 16) {
       const base = path.basename(L.file.replace(/\\/g, '/')).toLowerCase();
       const inv = invert !== invertNext;
       invertNext = false;
+      const child = mul(M, L.m);
+      if (studs && MALE.test(base)) {
+        // Stud primitives sit on y = 0 and rise toward -y (LDraw is y-down).
+        studs.push({ at: apply(child, 0, 0, 0), tip: apply(child, 0, -4, 0) });
+      }
       if (SKIP.some((re) => re.test(base))) continue;
-      flatten(L.file, mul(M, L.m), inv, tris, L.color === 16 || L.color === 24 ? color : L.color);
+      flatten(L.file, child, inv, tris, L.color === 16 || L.color === 24 ? color : L.color, studs);
     } else {
       const p = L.p;
       const v = [];
@@ -142,11 +151,12 @@ const meta = [];
 const chunks = [];
 let offset = 0;
 const seen = new Set();
-const parts = [...selection, ...extra, ...minifig.parts].filter((p) => !seen.has(p.id) && seen.add(p.id));
+const parts = [...special, ...selection, ...extra, ...minifig.parts].filter((p) => !seen.has(p.id) && seen.add(p.id));
 
 for (const part of parts) {
   const tris = [];
-  if (!flatten(`${part.id}.dat`, IDENTITY, false, tris) || tris.length === 0) {
+  const studs = [];
+  if (!flatten(`${part.id}.dat`, IDENTITY, false, tris, 16, studs) || tris.length === 0) {
     console.warn('skip (missing)', part.id);
     continue;
   }
@@ -235,6 +245,26 @@ for (const part of parts) {
   const colBuf = fixed ? Buffer.from(new Uint8Array(col).buffer) : Buffer.alloc(0);
   const blob = Buffer.concat([pad(posBuf), norBuf, pad(idxBuf), colBuf]);
   chunks.push(blob);
+  // Connectors, in the baked (centered, three.js-axes) frame, LDU:
+  // [type, x, y, z, ax, ay, az] — type 0 = stud (male), 1 = socket (female).
+  const conn = [];
+  const r1 = (v) => Math.round(v * 10) / 10;
+  for (const { at, tip } of studs) {
+    const ax = tip[0] - at[0];
+    const ay = tip[1] - at[1];
+    const az = tip[2] - at[2];
+    const l = Math.hypot(ax, ay, az) || 1;
+    conn.push([0, r1(at[0] - cx), r1(-(at[1] - cy)), r1(-(at[2] - cz)), r1(ax / l), r1(-ay / l), r1(-az / l)]);
+  }
+  // Sockets: a stud-grid under the footprint. Minifig parts only get them on the legs.
+  if ((part.tab !== 'Minifigs' || part.id === '3815c01') && part.joint?.role !== 'top') {
+    for (let i = 0; i < w; i++) {
+      for (let j = 0; j < d; j++) {
+        conn.push([1, r1((i - (w - 1) / 2) * 20), r1(-(h * UNIT) / 2), r1((j - (d - 1) / 2) * 20), 0, -1, 0]);
+      }
+    }
+  }
+
   meta.push({
     id: part.id,
     name: part.name,
@@ -243,6 +273,10 @@ for (const part of parts) {
     // Where the baked geometry's center sits in the part's own LDraw coordinates.
     center: [cx, cy, cz],
     fixed,
+    conn,
+    // Paired parts (hinge top/base, turntable top/base) share their LDraw origin when
+    // assembled; record where that origin sits in the baked frame.
+    ...(part.joint ? { joint: { ...part.joint, o: [r1(-cx), r1(cy), r1(cz)] } } : {}),
     ...(part.overlap ? { overlap: true } : {}),
     offset,
     vertices: vcount,

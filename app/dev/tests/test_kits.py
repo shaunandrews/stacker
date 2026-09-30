@@ -17,7 +17,7 @@ def carry_to(g, dy=0.004):
         c = [c[i]+d[i] for i in range(3)]
         cli('xr','set-transform', inp={'device':R,'position':{'x':c[0],'y':c[1],'z':c[2]}}); time.sleep(0.3)
 def kit_start(k):
-    s = probe(); ray_press(s['ui']['tab:10']); s = probe(); ray_press(s['ui'][f'cell:{k}']); time.sleep(1)
+    s = probe(); ray_press(s['ui'][tab_id('Kits')]); s = probe(); ray_press(s['ui'][f'cell:{k}']); time.sleep(1)
     return probe()
 cli('xr','set-transform', inp={'device':'headset','orientation':{'pitch':-40,'yaw':0,'roll':0}})
 # House: grab from shelf, carry near ghost → magnet, match

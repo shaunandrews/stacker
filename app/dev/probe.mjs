@@ -10,7 +10,7 @@ export default async function run({ frame, page }) {
     const recOut = (rec) => {
       const p = r.position.clone(); const q = r.quaternion.clone();
       s.placedWorldPose(rec, p, q);
-      return { part: s.lib.parts[rec.part].id, color: s.lib.colors[rec.color].code, i: rec.i, j: rec.j, level: rec.level, turns: rec.turns, free: !!rec.m, w: p.toArray().map(round) };
+      const e = rec.m.elements; return { part: s.lib.parts[rec.part].id, color: s.lib.colors[rec.color].code, local: [e[12], e[13], e[14]].map((v) => Math.round(v * 10000) / 10000), up: [e[4], e[5], e[6]].map((v) => Math.round(v * 100) / 100), w: p.toArray().map(round) };
     };
     return {
       placed: s.placedRecs.length, loose: s.loose.length, snaps: s.snaps.length, bounds: s.bounds, scale: s.scale,
