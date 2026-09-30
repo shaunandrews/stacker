@@ -67,3 +67,7 @@ SSAO needs a depth pre-pass and post-processing, which multiview WebXR can't aff
 
 ### A catalog page in the same app, editing through the dev server (Sept 2026)
 Auditing parts, colors and kit steps needs the real geometry and the real manual renderer, so the catalog is a second Vite page (`catalog.html`) that imports the app's own modules instead of a separate tool. Edits go through a small dev-server plugin (`catalog-api.ts`, local requests only) that writes the source files in `tools/` and reruns the pipeline, so every change shows in `git diff`; the deployed copy is read-only. Kit step edits are stored as regroupings of model-file indices (`tools/kit-edits/`) rather than hand-edited kit JSON, so rebuilding a kit doesn't lose them.
+
+### Accounts on Spacefast Zero (Sept 2026, planned)
+Accounts, friends and sharing will run on the Space's own Zero runtime rather than WordPress or an outside backend: guests come built in (and carry their data into an account on sign-in), live queries cover feeds, and it keeps everything on Spacefast. Stacker talks to it through a small off-screen Preact bridge, since Zero's data API is hooks. Detail and spike results: [10](10-accounts.md).
+
