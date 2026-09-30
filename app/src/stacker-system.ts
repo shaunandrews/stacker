@@ -41,6 +41,8 @@ import type { Material, Texture, ToneMapping } from '@iwsdk/core';
 import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js';
 import { dims, isSymmetric, Library, studGeometry, TABS } from './blocks.js';
 import { DesktopControls } from './desktop.js';
+import { ArtRenderer, KitBox, TEAR_PULL } from './kit-boxes.js';
+import type { ArtPiece, KitInfo } from './kit-boxes.js';
 import { ENVS, finishIndex, FINISHES, makeBackdrop, makeEnvScene, makeFinish, paintBackdrop, STYLES } from './look.js';
 import { progress } from './splash.js';
 
@@ -83,14 +85,22 @@ const MARGIN = 0.012;
 const PANEL_BG = 0x1b1f29;
 const PREVIEW_FIT = 0.042;
 const SLOTS = 6;
-const KITS = [
-  { id: '7796-1', title: 'House', pieces: 56 },
-  { id: '6400-1', title: 'Go-Kart', pieces: 29 },
-  { id: '7910-1', title: 'Robot', pieces: 25 },
+const KITS: KitInfo[] = [
+  { id: '7796-1', title: 'House', pieces: 56, color: '#c8102e' },
+  { id: '6400-1', title: 'Go-Kart', pieces: 29, color: '#e8a000' },
+  { id: '7910-1', title: 'Robot', pieces: 25, color: '#3a6fd8' },
+  { id: '31028-1', title: 'Sea Plane', pieces: 53, color: '#0097a7' },
+  { id: '6687-1', title: 'Turbo Prop', pieces: 90, color: '#1565c0' },
+  { id: '6350-1', title: 'Pizza To Go', pieces: 166, color: '#2e7d32' },
+  { id: '374-1', title: 'Fire Station', pieces: 363, color: '#b71c1c' },
 ];
 const TAB_NAMES = [...TABS, 'Kits', 'Saves'];
 const SHELF_W = 0.34;
 const SHELF_D = 0.16;
+// Kit box rack: two shelves of boxes, fronts facing the user.
+const RACK_W = 0.64;
+const RACK_TIER = 0.155;
+const RACK_D = 0.09;
 
 // ---- Look & render settings ----
 interface SliderDef {
@@ -155,7 +165,7 @@ type Hand = (typeof HANDS)[number];
 type Btn = 'squeeze' | 'trigger' | 'a' | 'b' | 'pinch' | 'mid';
 type Tool = 'build' | 'select' | 'paint';
 type PanelId = 'library' | 'settings' | 'manual';
-type FrameKind = 'platform' | 'shelf' | PanelId;
+type FrameKind = 'platform' | 'shelf' | 'rack' | PanelId;
 
 /** Where a block sits: a full transform in platform-local (unscaled) meters. */
 interface Placement {
@@ -239,13 +249,14 @@ interface UiItem {
   slot?: [InstancedMesh, number]; // swatches: their instance
 }
 
-type TargetKind = 'placed' | 'loose' | 'cell' | 'ui' | 'edge' | 'corner' | 'bar' | 'resize';
+type TargetKind = 'placed' | 'loose' | 'cell' | 'ui' | 'edge' | 'corner' | 'bar' | 'resize' | 'box' | 'tear';
 
 interface Target {
   kind: TargetKind;
   placed?: Placed;
   loose?: Loose;
   ui?: UiItem;
+  box?: KitBox;
   corner?: number;
   frame?: FrameKind;
   obj?: Object3D;
@@ -286,6 +297,9 @@ interface HandState {
   target: Target | null;
   targetFar: boolean;
   pieces: Piece[] | null;
+  box: KitBox | null; // a kit box in hand
+  tear: KitBox | null; // pulling this box's tear strip
+  tearFrom: Vector3;
   holdButton: Btn | null;
   fromSelection: boolean;
   rotTarget: Quaternion; // controller: where the held block's rotation is easing to
@@ -420,6 +434,13 @@ export class StackerSystem extends createSystem({}) {
   private shelfTex!: CanvasTexture;
   private shelfItems: Array<{ block: Loose; pos: Vector3 }> = [];
   private shelfParts: Entity[] = [];
+  private shelfAt: { pos: Vector3; yaw: number } | null = null; // where the next shelf goes (an opened box)
+
+  // Kit boxes
+  private rack: Entity | null = null;
+  private rackBar: Object3D | null = null;
+  private boxes: KitBox[] = [];
+  private kitData = new Map<string, Promise<KitBlock[][]>>();
 
   // Tools & state
   private tool: Tool = 'build';
@@ -567,6 +588,7 @@ export class StackerSystem extends createSystem({}) {
       if (saved) this.deserialize(saved);
       this.stable = this.snapshot();
       this.edited = false;
+      this.buildRack();
       this.applyVisuals();
       this.ready = true;
       if (this.desktop.enabled) this.frameCamera();
@@ -601,6 +623,7 @@ export class StackerSystem extends createSystem({}) {
     // The library turns red while a held block is over it: letting go removes it.
     (this.library.bg.material as MeshBasicMaterial).color.setHex(trash ? 0x5c1f27 : PANEL_BG);
     this.tickSnaps(delta);
+    this.tickBoxes(delta);
     this.tickPoofs(delta);
     this.tickLevel(delta);
     this.settleUndo();
@@ -618,7 +641,7 @@ export class StackerSystem extends createSystem({}) {
     // Redraw shadows only while something that casts them moves, or after a change —
     // last, so everything this frame changed is in.
     let moving = this.shadowDirty || this.snaps.length > 0 || this.poofs.length > 0;
-    for (const h of this.hands) moving ||= !!h.pieces || h.frame === 'platform' || h.frame === 'shelf';
+    for (const h of this.hands) moving ||= !!h.pieces || !!h.box || !!h.frame;
     if (moving) {
       this.renderer.shadowMap.needsUpdate = true;
       this.shadowDirty = false;
@@ -939,6 +962,7 @@ export class StackerSystem extends createSystem({}) {
       if (this.manual) place(this.manual.entity.object3D!, x1 * P + 0.2, 0.24, zc - 0.08, -0.55, -0.3);
     }
     if (this.shelf) this.placeShelf();
+    this.placeRack();
     this.aimKeyLight();
   }
 
@@ -2269,6 +2293,9 @@ export class StackerSystem extends createSystem({}) {
       target: null,
       targetFar: false,
       pieces: null,
+      box: null,
+      tear: null,
+      tearFrom: new Vector3(),
       holdButton: null,
       fromSelection: false,
       rotTarget: new Quaternion(),
@@ -2522,6 +2549,14 @@ export class StackerSystem extends createSystem({}) {
       if (released) this.releasePieces(h);
       else if (h.down.has('b')) this.dropPieces(h);
       else this.holdPieces(h, delta);
+    } else if (h.box) {
+      if (released) this.releaseBox(h);
+      else if (h.down.has('b')) this.returnBox(h.box);
+      else this.carryBox(h, delta);
+      if (!h.box) h.holdButton = null;
+    } else if (h.tear) {
+      if (released) this.releaseTear(h);
+      else this.pullTear(h);
     } else if (h.frame) {
       if (released) this.releaseFrame(h);
       else this.holdFrame(h, delta);
@@ -2621,6 +2656,21 @@ export class StackerSystem extends createSystem({}) {
     if (this.shelfBar) {
       const sc = this.probeObject(h, this.shelfBar, 0.075, 0.014, 0.014, far);
       if (sc < limit) best = this.consider(best, { kind: 'bar', frame: 'shelf', obj: this.shelfBar, score: sc });
+    }
+    if (this.rackShown()) {
+      const sc = this.probeObject(h, this.rackBar!, 0.085, 0.014, 0.014, far);
+      if (sc < limit) best = this.consider(best, { kind: 'bar', frame: 'rack', obj: this.rackBar!, score: sc });
+    }
+    for (const b of this.boxes) {
+      if (!b.mesh.visible || b.state === 'returning' || b.state === 'opening') continue;
+      // The tear strip's tab, once the box is off the rack (it can be in the other hand).
+      if (b.state !== 'rack') {
+        const ts = this.probeObject(h, b.tab, 0.014, 0.008, 0.014, far);
+        if (ts < limit) best = this.consider(best, { kind: 'tear', box: b, obj: b.tab, score: Math.max(0, ts - 0.01) });
+      }
+      if (b.state === 'held') continue;
+      const sc = this.probeObject(h, b.mesh, b.w / 2, b.h / 2, b.d / 2, far);
+      if (sc < limit) best = this.consider(best, { kind: 'box', box: b, obj: b.mesh, score: sc });
     }
 
     for (const p of this.panels) {
@@ -2819,6 +2869,12 @@ export class StackerSystem extends createSystem({}) {
       return;
     }
     switch (t.kind) {
+      case 'box':
+        this.holdBox(h, btn, t.box!);
+        return;
+      case 'tear':
+        this.startTear(h, btn, t.box!);
+        return;
       case 'cell': {
         const item = t.ui!;
         item.preview!.getWorldPosition(this.v1);
@@ -2876,6 +2932,7 @@ export class StackerSystem extends createSystem({}) {
   private frameObject(frame: FrameKind): Object3D {
     if (frame === 'platform') return this.root.object3D!;
     if (frame === 'shelf') return this.shelf!.object3D!;
+    if (frame === 'rack') return this.rack!.object3D!;
     return this.panels.find((p) => p.id === frame)!.entity.object3D!;
   }
 
@@ -2905,6 +2962,8 @@ export class StackerSystem extends createSystem({}) {
       this.redrawUi((u) => u.id === 'deselect');
     } else if (t.kind === 'loose') {
       this.dropLoose(t.loose!, true);
+    } else if (t.kind === 'box' && t.box!.state === 'loose') {
+      this.returnBox(t.box!);
     }
   }
 
@@ -3145,6 +3204,7 @@ export class StackerSystem extends createSystem({}) {
     obj.updateMatrixWorld(true);
     if (h.frame === 'platform') this.aimKeyLight();
     if (h.frame === 'shelf') this.layoutShelfItems();
+    if (h.frame === 'rack') this.layoutRack();
   }
 
   /** Resize the library: its top-left stays fixed, the grid regrows in whole cells. */
@@ -3215,7 +3275,8 @@ export class StackerSystem extends createSystem({}) {
     const t = h.target;
     // Pinch ring: sits between thumb and index, shrinks as they close, fills blue on pinch.
     const ring = h.pinchRing;
-    ring.visible = h.mode === 'hand' && !h.pieces && !h.frame && !h.slider && h.pinchGap < 0.07;
+    const busy = !!(h.pieces || h.frame || h.slider || h.box || h.tear);
+    ring.visible = h.mode === 'hand' && !busy && h.pinchGap < 0.07;
     if (ring.visible) {
       ring.position.copy(h.point);
       this.camera.getWorldQuaternion(ring.quaternion);
@@ -3225,7 +3286,7 @@ export class StackerSystem extends createSystem({}) {
       m.opacity = Math.min(1, (0.07 - h.pinchGap) / 0.03);
     }
     h.outline.visible = false;
-    if (t && !h.pieces && !h.frame && !h.slider && t.kind !== 'ui') {
+    if (t && !busy && t.kind !== 'ui') {
       if (t.kind === 'placed') {
         this.placedWorldPose(t.placed!, h.outline.position, h.outline.quaternion);
         h.outline.geometry = this.lib.geometries[t.placed!.part];
@@ -3236,16 +3297,15 @@ export class StackerSystem extends createSystem({}) {
         obj.getWorldQuaternion(h.outline.quaternion);
         obj.getWorldScale(h.outline.scale);
         h.outline.geometry = obj.geometry;
-        h.outline.scale.multiplyScalar(t.kind === 'loose' || t.kind === 'cell' ? 1.08 : 1.3);
+        h.outline.scale.multiplyScalar(t.kind === 'loose' || t.kind === 'cell' ? 1.08 : t.kind === 'box' ? 1.04 : 1.3);
       }
       (h.outline.material as MeshBasicMaterial).color.set(this.tool === 'paint' ? this.lib.colors[this.color].hex : 0xffffff);
       h.outline.visible = true;
     }
-    const showRay = h.mode !== 'none' && h.mode !== 'mouse' && !h.pieces && !h.frame && (h.targetFar || !t || !!h.slider);
+    const showRay = h.mode !== 'none' && h.mode !== 'mouse' && !h.pieces && !h.frame && !h.box && (h.targetFar || !t || !!h.slider || !!h.tear);
     h.ray.visible = showRay;
     h.cursor.visible = showRay && !!t;
     if (h.mode === 'mouse') {
-      const busy = h.pieces || h.frame || h.slider;
       this.desktop.setCursor(busy ? 'grabbing' : !t ? 'default' : t.kind === 'ui' ? 'pointer' : 'grab');
     }
     if (!showRay) return;
@@ -3278,8 +3338,21 @@ export class StackerSystem extends createSystem({}) {
 
   // ================================================================ kits
 
+  /** A kit's steps, fetched once. */
+  private kitSteps(id: string): Promise<KitBlock[][]> {
+    let p = this.kitData.get(id);
+    if (!p) {
+      p = fetch(`${import.meta.env.BASE_URL}kits/${id}.json`)
+        .then((r) => r.json())
+        .then((d: { steps: KitBlock[][] }) => d.steps);
+      p.catch(() => this.kitData.delete(id));
+      this.kitData.set(id, p);
+    }
+    return p;
+  }
+
   private async startKit(id: string, title: string): Promise<void> {
-    const data = (await fetch(`${import.meta.env.BASE_URL}kits/${id}.json`).then((r) => r.json())) as { steps: KitBlock[][] };
+    const data = { steps: await this.kitSteps(id) };
     this.exitKit();
     this.clearPlaced();
     const all = data.steps.flat();
@@ -3323,23 +3396,29 @@ export class StackerSystem extends createSystem({}) {
       spawned: [],
     };
     this.buildShelf();
+    this.syncRack();
     this.showTab(TAB_NAMES.indexOf('Kits'));
     this.beginStep();
     this.applyInstructions();
   }
 
   private kitRec(b: KitBlock): Placed | null {
-    const kit = this.kit!;
+    const p = this.kitPiece(b, this.kit!.di, this.kit!.dj);
+    return p && this.makeRec(p.part, p.color, p.m);
+  }
+
+  /** A kit block as part, palette color and platform-local matrix, shifted by whole studs. */
+  private kitPiece(b: KitBlock, di: number, dj: number): { part: number; color: number; m: Matrix4 } | null {
     const part = this.lib.byId.get(b.part);
     if (part === undefined) return null;
     const color = this.colorOf(b.color);
     if (b.m) {
       const [r0, r1, r2, r3, r4, r5, r6, r7, r8, tx, ty, tz] = b.m;
       const L = dims.ldu;
-      const m = new Matrix4().set(r0, r1, r2, tx * L + kit.di * dims.pitch, r3, r4, r5, ty * L, r6, r7, r8, tz * L + kit.dj * dims.pitch, 0, 0, 0, 1);
-      return this.makeRec(part, color, m);
+      const m = new Matrix4().set(r0, r1, r2, tx * L + di * dims.pitch, r3, r4, r5, ty * L, r6, r7, r8, tz * L + dj * dims.pitch, 0, 0, 0, 1);
+      return { part, color, m };
     }
-    return this.makeRec(part, color, this.gridMatrix(part, b.i! + kit.di, b.j! + kit.dj, b.level!, b.turns!));
+    return { part, color, m: this.gridMatrix(part, b.i! + di, b.j! + dj, b.level!, b.turns!) };
   }
 
   private edgeGeo(part: number): BufferGeometry {
@@ -3445,11 +3524,13 @@ export class StackerSystem extends createSystem({}) {
     this.destroyShelf();
     this.kit = null;
     this.applyInstructions();
+    this.syncRack();
   }
 
   private finishKit(): void {
     this.destroyShelf();
     this.kit = null;
+    this.syncRack();
     this.applyInstructions();
     this.redrawUi();
   }
@@ -3612,11 +3693,18 @@ export class StackerSystem extends createSystem({}) {
     const r = this.root.object3D!;
     const P = dims.pitch * this.scale;
     const s = this.shelf!.object3D!;
-    s.position
-      .set(this.bounds.x1 * P + 0.22, 0.08, ((this.bounds.z0 + this.bounds.z1) / 2) * P + 0.12)
-      .applyQuaternion(r.quaternion)
-      .add(r.position);
-    s.quaternion.copy(r.quaternion).multiply(this.q1.setFromEuler(this.euler.set(0.35, -0.55, 0, 'YXZ')));
+    if (this.shelfAt) {
+      // Where the box was opened, facing the player.
+      s.position.copy(this.shelfAt.pos);
+      s.quaternion.setFromEuler(this.euler.set(0.35, this.shelfAt.yaw, 0, 'YXZ'));
+      this.shelfAt = null;
+    } else {
+      s.position
+        .set(this.bounds.x1 * P + 0.22, 0.08, ((this.bounds.z0 + this.bounds.z1) / 2) * P + 0.12)
+        .applyQuaternion(r.quaternion)
+        .add(r.position);
+      s.quaternion.copy(r.quaternion).multiply(this.q1.setFromEuler(this.euler.set(0.35, -0.55, 0, 'YXZ')));
+    }
     s.updateMatrixWorld(true);
     this.layoutShelfItems();
   }
@@ -3691,6 +3779,278 @@ export class StackerSystem extends createSystem({}) {
     ctx.textBaseline = 'middle';
     ctx.fillText(`${this.kit.title} · step ${this.kit.step + 1} of ${this.kit.steps.length}`, 256, 34);
     this.shelfTex.needsUpdate = true;
+  }
+
+  // ---- kit boxes
+
+  /** A rack of kit boxes; the art is drawn in once the models have rendered. */
+  private buildRack(): void {
+    const mat = new MeshStandardMaterial({ color: 0x2a2f3a, roughness: 0.55 });
+    const base = new Mesh(new RoundedBoxGeometry(RACK_W, 0.01, RACK_D, 2, 0.003), mat);
+    base.name = 'KitRack';
+    base.receiveShadow = true;
+    this.rack = this.track(this.world.createTransformEntity(base));
+    const parts: Mesh[] = [];
+    const shelf = new Mesh(new RoundedBoxGeometry(RACK_W, 0.008, RACK_D, 2, 0.003), mat);
+    shelf.position.y = RACK_TIER;
+    shelf.receiveShadow = true;
+    const back = new Mesh(new BoxGeometry(RACK_W, RACK_TIER * 2 + 0.02, 0.006), mat);
+    back.position.set(0, RACK_TIER - 0.005, -RACK_D / 2 + 0.003);
+    for (const x of [-1, 1]) {
+      const side = new Mesh(new BoxGeometry(0.008, RACK_TIER * 2 + 0.02, RACK_D), mat);
+      side.position.set((x * (RACK_W - 0.008)) / 2, RACK_TIER - 0.005, 0);
+      parts.push(side);
+    }
+    const bar = new Mesh(new CapsuleGeometry(0.009, 0.14, 4, 10).rotateZ(Math.PI / 2), new MeshStandardMaterial({ color: 0xf1f5f9, roughness: 0.3 }));
+    bar.position.set(0, -0.012, RACK_D / 2 + 0.02);
+    this.rackBar = bar;
+    for (const m of [shelf, back, ...parts, bar]) this.child(this.rack, m);
+    // Boxes: first half on the bottom shelf, the rest on top, centered in each row.
+    this.boxes = KITS.map((k) => new KitBox(k));
+    const perRow = Math.ceil(this.boxes.length / 2);
+    for (let row = 0; row < 2; row++) {
+      const inRow = this.boxes.slice(row * perRow, (row + 1) * perRow);
+      const gap = 0.01;
+      const total = inRow.reduce((a, b) => a + b.w, 0) + gap * (inRow.length - 1);
+      let x = -total / 2;
+      for (const b of inRow) {
+        b.slotPos.set(x + b.w / 2, row * RACK_TIER + 0.005 + b.h / 2 + (row ? 0.004 : 0), 0.004);
+        x += b.w + gap;
+        this.world.createTransformEntity(b.mesh, { persistent: true });
+      }
+    }
+    this.placeRack();
+    void this.paintBoxes();
+  }
+
+  private placeRack(): void {
+    if (!this.rack) return;
+    const r = this.root.object3D!;
+    const P = dims.pitch * this.scale;
+    const { x0, x1, z0, z1 } = this.bounds;
+    const obj = this.rack.object3D!;
+    if (this.desktop.enabled && !this.renderer.xr.isPresenting) {
+      // Desktop: behind the plate, between the panels, facing the camera.
+      obj.position.set(((x0 + x1) / 2) * P, 0.04, z0 * P - 0.3);
+      obj.quaternion.identity();
+    } else {
+      obj.position.set(x1 * P + 0.42, -0.06, ((z0 + z1) / 2) * P - 0.06);
+      obj.quaternion.setFromAxisAngle(this.up, -0.65);
+    }
+    obj.position.applyQuaternion(r.quaternion).add(r.position);
+    obj.quaternion.premultiply(r.quaternion);
+    obj.updateMatrixWorld(true);
+    this.layoutRack();
+  }
+
+  /** Boxes that sit on the rack follow it. */
+  private layoutRack(): void {
+    if (!this.rack) return;
+    const obj = this.rack.object3D!;
+    obj.updateMatrixWorld(true);
+    for (const b of this.boxes) {
+      if (b.state !== 'rack') continue;
+      b.mesh.position.copy(b.slotPos).applyMatrix4(obj.matrixWorld);
+      b.mesh.quaternion.copy(obj.quaternion).multiply(b.slotQuat);
+    }
+    this.shadowDirty = true;
+  }
+
+  /** The rack is out while no kit is being built; any box that's out goes home either way. */
+  private syncRack(): void {
+    if (!this.rack) return;
+    const show = !this.kit;
+    this.rack.object3D!.visible = show;
+    for (const b of this.boxes) {
+      if (b.state === 'opening') continue;
+      if (b.state !== 'rack') {
+        this.returnBox(b);
+        b.state = 'rack';
+        b.mesh.scale.setScalar(1);
+      }
+      b.mesh.visible = show;
+    }
+    this.layoutRack();
+  }
+
+  private rackShown(): boolean {
+    return !!this.rack && this.rack.object3D!.visible;
+  }
+
+  /** Render each kit's model into its box art, one kit at a time, in a throwaway context. */
+  private async paintBoxes(): Promise<void> {
+    let art: ArtRenderer | null = null;
+    try {
+      for (const box of this.boxes) {
+        const steps = await this.kitSteps(box.kit.id);
+        art ??= new ArtRenderer();
+        const pieces: ArtPiece[] = [];
+        for (const b of steps.flat()) {
+          const p = this.kitPiece(b, 0, 0);
+          if (p) pieces.push({ geometry: this.lib.geometries[p.part], material: this.matFor(0, p.color), matrix: p.m });
+        }
+        box.paint(art.render(pieces, 'front'), art.render(pieces, 'back'), steps.length);
+        await new Promise((r) => setTimeout(r, 0)); // let a frame through between kits
+      }
+    } catch (err) {
+      console.warn('Box art failed', err);
+    } finally {
+      art?.dispose();
+    }
+  }
+
+  private holdBox(h: HandState, btn: Btn, box: KitBox): void {
+    // Only one box out at a time: another floating one goes back.
+    for (const b of this.boxes) if (b !== box && b.state === 'loose') this.returnBox(b);
+    const fromRack = box.state === 'rack';
+    box.state = 'held';
+    h.box = box;
+    h.holdButton = btn;
+    h.anchorDist = -1;
+    h.target = null;
+    this.tick(0.3);
+    const obj = box.mesh;
+    if (h.mode === 'mouse') {
+      h.rotTarget.identity();
+      h.offsetQuat.identity();
+      return;
+    }
+    this.q1.copy(h.quat).invert();
+    if (h.targetFar || (fromRack && h.mode === 'controller')) {
+      // Bring it to the hand, front toward the eyes.
+      const pos = this.v3.copy(h.point).addScaledVector(h.rayDir, 0.05 + box.w / 2);
+      this.player.head.getWorldPosition(this.v4).sub(pos);
+      const q = this.q2.setFromAxisAngle(this.up, Math.atan2(this.v4.x, this.v4.z));
+      h.offsetQuat.copy(this.q1).multiply(q);
+      h.offsetPos.copy(pos).sub(h.point).applyQuaternion(this.q1);
+    } else {
+      h.offsetQuat.copy(this.q1).multiply(obj.quaternion);
+      h.offsetPos.copy(obj.position).sub(h.point).applyQuaternion(this.q1);
+    }
+  }
+
+  private carryBox(h: HandState, delta: number): void {
+    const obj = h.box!.mesh;
+    if (h.mode === 'mouse') {
+      // Desktop: the box floats in front of the camera; arrows and Q/E turn it.
+      const d = this.desktop;
+      const quarter = Math.PI / 2;
+      if (d.actions.has('spinL')) h.rotTarget.premultiply(this.q2.setFromAxisAngle(this.up, quarter));
+      if (d.actions.has('spinR')) h.rotTarget.premultiply(this.q2.setFromAxisAngle(this.up, -quarter));
+      if (d.actions.has('tipU')) h.rotTarget.premultiply(this.q2.setFromAxisAngle(this.v2.set(1, 0, 0), -quarter));
+      if (d.actions.has('tipD')) h.rotTarget.premultiply(this.q2.setFromAxisAngle(this.v2.set(1, 0, 0), quarter));
+      h.offsetQuat.slerp(h.rotTarget, 1 - Math.exp(-delta * 14));
+      this.v1.copy(h.rayOrigin).addScaledVector(h.rayDir, 0.42);
+      this.q1.copy(h.quat).multiply(h.offsetQuat);
+    } else {
+      this.v1.copy(h.offsetPos).applyQuaternion(h.quat).add(h.point);
+      this.q1.copy(h.quat).multiply(h.offsetQuat);
+    }
+    const a = 1 - Math.exp(-delta * (h.mode === 'hand' ? FOLLOW_HAND : FOLLOW_CTRL));
+    obj.position.lerp(this.v1, a);
+    obj.quaternion.slerp(this.q1, a);
+  }
+
+  private releaseBox(h: HandState): void {
+    const box = h.box!;
+    h.box = null;
+    h.holdButton = null;
+    if (this.overRack(box.mesh.position)) this.returnBox(box);
+    else box.state = 'loose';
+    this.tick(0.2);
+  }
+
+  private overRack(pos: Vector3): boolean {
+    if (!this.rackShown()) return false;
+    const lo = this.rack!.object3D!.worldToLocal(this.v1.copy(pos));
+    return Math.abs(lo.x) < RACK_W / 2 + 0.03 && lo.y > -0.03 && lo.y < RACK_TIER * 2 + 0.06 && Math.abs(lo.z) < RACK_D / 2 + 0.06;
+  }
+
+  private returnBox(b: KitBox): void {
+    for (const h of this.hands) {
+      if (h.box === b) h.box = null;
+      if (h.tear === b) h.tear = null;
+    }
+    b.setTear(0, null);
+    b.warn.visible = false;
+    b.fromPos.copy(b.mesh.position);
+    b.fromQuat.copy(b.mesh.quaternion);
+    b.t = 0;
+    b.state = 'returning';
+  }
+
+  private startTear(h: HandState, btn: Btn, box: KitBox): void {
+    h.tear = box;
+    h.holdButton = btn;
+    h.anchorDist = h.mode !== 'hand' && h.targetFar ? h.target!.score : -1;
+    h.tearFrom.copy(this.grabPoint(h));
+    h.target = null;
+    box.warn.visible = this.placedRecs.length > 0 && !this.kit;
+    box.setTear(0.02, h.tearFrom);
+    this.tick(0.3);
+  }
+
+  private pullTear(h: HandState): void {
+    const box = h.tear!;
+    const p = this.grabPoint(h);
+    const t = Math.min(1, Math.max(0.02, p.distanceTo(h.tearFrom) / TEAR_PULL));
+    if (Math.floor(t * 5) > Math.floor(box.tear * 5)) this.tick(0.15 + t * 0.3); // ratchets as it rips
+    box.setTear(t, p);
+    if (t >= 1) {
+      h.tear = null;
+      h.holdButton = null;
+      this.openBox(box);
+    }
+  }
+
+  private releaseTear(h: HandState): void {
+    const box = h.tear!;
+    h.tear = null;
+    h.holdButton = null;
+    box.setTear(0, null);
+    box.warn.visible = false;
+  }
+
+  /** Torn open: the box pops, the kit starts, and its parts shelf appears where the box was. */
+  private openBox(box: KitBox): void {
+    for (const h of this.hands) if (h.box === box) {
+      h.box = null;
+      h.holdButton = null;
+    }
+    box.state = 'opening';
+    box.t = 0;
+    box.setTear(1, null);
+    box.warn.visible = false;
+    this.player.head.getWorldPosition(this.v4).sub(box.mesh.position);
+    this.shelfAt = { pos: box.mesh.position.clone().addScaledVector(this.up, -box.h / 2), yaw: Math.atan2(this.v4.x, this.v4.z) };
+    this.chime();
+  }
+
+  private tickBoxes(delta: number): void {
+    for (const b of this.boxes) {
+      if (b.state === 'returning') {
+        b.t = Math.min(1, b.t + delta / 0.35);
+        const e = 1 - (1 - b.t) ** 3;
+        const rack = this.rack!.object3D!;
+        this.v1.copy(b.slotPos).applyMatrix4(rack.matrixWorld);
+        this.q1.copy(rack.quaternion).multiply(b.slotQuat);
+        b.mesh.position.lerpVectors(b.fromPos, this.v1, e);
+        b.mesh.quaternion.slerpQuaternions(b.fromQuat, this.q1, e);
+        if (b.t >= 1) b.state = 'rack';
+        this.shadowDirty = true;
+      } else if (b.state === 'opening') {
+        b.t = Math.min(1, b.t + delta / 0.32);
+        b.mesh.scale.setScalar(b.t < 0.35 ? 1 + b.t * 0.4 : 1.14 * (1 - (b.t - 0.35) / 0.65));
+        this.shadowDirty = true;
+        if (b.t >= 1) {
+          b.mesh.visible = false;
+          b.mesh.scale.setScalar(1);
+          b.state = 'returning';
+          b.t = 1;
+          void this.startKit(b.kit.id, b.kit.title);
+        }
+      }
+    }
   }
 
   // ================================================================ saves

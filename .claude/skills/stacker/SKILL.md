@@ -54,11 +54,10 @@ Then add new kits to `KITS` in `stacker-system.ts`. See `docs/04-parts-pipeline.
 ## Git
 
 - Remote: `origin` → https://github.com/shaunandrews/stacker (**public**, GPL-3.0-or-later). Branch `main`.
-- Commit only when Shaun asks. Group changes into logical commits; typecheck and run the relevant emulator tests first.
+- **Ship every time** (Shaun's standing instruction): when a piece of work is done and tests pass, commit, `git push`, and deploy — don't ask first. Group changes into logical commits; typecheck and run the relevant emulator tests first. Stop and ask only if tests fail.
 - Message: imperative subject under ~60 chars, blank line, a short body of what changed and why (bullets are fine). End with the attribution line from the current session's instructions (e.g. `Co-Authored-By: Claude …`).
 - Never commit: `data-src/`, `app/dist/`, `app/artifacts/`, `app/.spacefast/state.json`, tokens or preview links containing `/__/` keys.
 - It's a public repo: check new files for secrets before staging (`git add --dry-run .`).
-- Push with `git push` after committing when Shaun asks to push or ship.
 - Keep `docs/` current when behavior changes: interaction → `03`, pipeline → `04`, kits → `05`, rendering → `06`, and add a line to `08-decisions.md` for any real design choice.
 
 ## Deploy to Spacefast

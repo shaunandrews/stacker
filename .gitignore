@@ -4,3 +4,4 @@ data-src/
 # Build/deploy leftovers
 site.zip
 .DS_Store
+.spacefast/

@@ -11,6 +11,12 @@ A kit is an official model broken into steps. Stacker guides you through it with
 | House | OMR 7796-1 (2008), by Merlijn Wissink | 56 | 13 | All grid parts; steps generated bottom-up |
 | Go-Kart | OMR 6400-1 (1997) | 29 | 8 | Authored steps; wheels and the driver are free parts |
 | Robot | OMR 7910-1 (2004) | 25 | 8 | Built at angles — every part is free |
+| Sea Plane | OMR 31028-1 (2015) | 53 | 13 | Half-stud grid offset (auto-detected) |
+| Turbo Prop | OMR 6687-1 (1987) | 90 | 23 | Plane plus two minifigs |
+| Pizza To Go | OMR 6350-1 (1994) | 166 | 40 | Car and minifigs placed at 30°/60° (free parts) |
+| Fire Station | OMR 374-1 (1978) | 363 | 80 | Includes its own 16×32 baseplate; logo flag swapped for a plain one |
+
+To browse more candidates, the OMR list (1,470 models) can be joined with Rebrickable's `sets.csv`/`themes.csv` for names, years and piece counts. Technic models are a poor fit (pins and axles don't snap).
 
 Kits were found by scoring small sets (Rebrickable) for coverage by our parts and checking which exist in the [LDraw Official Model Repository](https://library.ldraw.org/omr/sets) (`https://library.ldraw.org/library/omr/<set>.mpd`).
 
@@ -24,7 +30,7 @@ python3 tools/build-kit.py build data-src/6400-1.mpd Go-Kart 6400-1
 1. **Read** the `.mpd`; each `0 FILE` section is a sub-model. The first is the main model.
 2. **Flatten** sub-models (e.g. the Go-Kart's driver) into parts, composing transforms and inheriting color 16. `0 STEP` lines in the main model set step numbers.
 3. **Transform** each part: its baked center (from `parts.json`) is carried through the LDraw matrix, then into three.js axes: `T = (x, −y, −z)`, `R = F·M·F`.
-4. **Classify:**
+4. **Classify** (after finding the model's grid origin — the most common stud offset among upright parts — and its half-plate phase, with the base under the lowest part):
    - **Grid** if upright (`R[1][1] ≈ 1`) and its footprint lands on whole studs and whole half-plates → `{ i, j, level, turns, fw, fd }`
    - **Free** otherwise → `{ m: [R (9), T (3)] }` in LDU, model space
 5. **Steps:** authored `STEP`s if present; otherwise bottom-up by height, 3–5 parts per step with small layers merged. Steps over 8 parts are split so the shelf stays manageable.
@@ -39,9 +45,22 @@ python3 tools/build-kit.py build data-src/6400-1.mpd Go-Kart 6400-1
   ] }
 ```
 
+## Kit boxes
+
+![Kit box rack](images/v9-boxes.png)
+
+Every kit has a product box on a **rack** to the right of the platform (desktop view: behind the plate). Box art is rendered at startup from the kit's own model by a small throwaway WebGL context (`ArtRenderer` in `kit-boxes.ts`) — front from the front-right, back from the back-left, cropped to the model's projected bounds — so there's no packaging art to license and new kits get a box automatically. Box color comes from `KITS[].color`; size grows with the piece count.
+
+1. **Grab a box** (squeeze/trigger/pinch, near or by ray; click-drag on desktop). From the rack or by ray it comes to your hand, front toward your eyes; turn your hand to read the back (pieces, steps).
+2. **Let go** and it floats where you left it. Let go over the rack, or press **B** on it, and it goes back. Taking another box sends a floating one home.
+3. **Tear the strip** on top: grab its tab (sticking out on the right) and pull ~9 cm in any direction. It ratchets with haptic ticks; let go early and it springs back. If there's a build on the plate a label warns that opening clears it (undo brings it back after the kit).
+4. **Torn:** the box pops, the kit starts, and the parts shelf appears where the box was. The rack hides while a kit is running and returns, every box home, when it ends.
+
+The Library's Kits tab still starts kits directly.
+
 ## Running a kit
 
-Starting a kit (Library → Kits → a kit):
+Starting a kit (a box, or Library → Kits → a kit):
 
 1. Clears the platform, grows it if the model doesn't fit, and centers the model (`di`, `dj` lattice offset)
 2. Builds the **shelf** and fills it with step 1's pieces
@@ -93,5 +112,6 @@ The magnet stays on in every mode, so free parts can still be placed.
 2. Download the `.mpd` into `data-src/`
 3. `python3 tools/build-kit.py collect data-src/*.mpd` → then rebuild colors and parts (new parts go to the More tab)
 4. `python3 tools/build-kit.py build data-src/<set>.mpd <Title> <set>`
-5. Add `{ id, title, pieces }` to `KITS` in `stacker-system.ts`
-6. Test: `await s.startKit('<set>', '<Title>')` in the emulator, skip through, confirm the piece count
+5. Add `{ id, title, pieces, color }` to `KITS` in `stacker-system.ts` (its box appears on the rack)
+6. Test: `await s.startKit('<set>', '<Title>')` in the emulator, skip through, confirm the piece count; `python3 dev/tests/test_boxes.py` for the box flow
+7. Logo-printed parts: map them to their plain version in `PLAIN` in `build-kit.py`
