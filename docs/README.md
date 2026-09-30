@@ -18,6 +18,7 @@ Stacker is a mixed-reality brick-building app for Meta Quest 3, built for the br
 | [06 · Rendering & performance](06-rendering-and-performance.md) | Instancing, materials, lighting, look presets, perf budget |
 | [07 · Development](07-development.md) | Running, emulator testing, deploying, licensing |
 | [08 · Decisions](08-decisions.md) | Why things are the way they are |
+| [09 · Catalog & audit](09-catalog.md) | The catalog page: views, audit checks, how floating is found, editing, dev-server API, file formats |
 
 ## Status (2026-09-30)
 

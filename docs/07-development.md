@@ -24,7 +24,7 @@ IWSDK specifics worth knowing (full detail in `app/AGENTS.md`):
 
 ## The catalog
 
-`https://localhost:3129/catalog.html` on the dev server: every part, color, finish and kit, with audit checks and review marks (see [05](05-kits.md#auditing-kits-the-catalog)). It loads the app's own modules and data, so there's nothing to build. Edits (part names and tabs, kit steps, ✓ / ⚑ marks) save through `catalog-api.ts`, which only answers requests from this machine and writes files in `tools/` and `app/public/`; review the result with `git diff`. The deployed copy is read-only.
+`https://localhost:3129/catalog.html` on the dev server: every part, color, finish and kit, with audit checks and review marks (full guide: [09 · Catalog & audit](09-catalog.md)). It loads the app's own modules and data, so there's nothing to build. Edits (part names and tabs, kit steps, ✓ / ⚑ marks) save through `catalog-api.ts`, which only answers requests from this machine and writes files in `tools/` and `app/public/`; review the result with `git diff`. The deployed copy is read-only.
 
 ## Test in the emulator
 

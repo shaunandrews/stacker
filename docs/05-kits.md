@@ -132,7 +132,7 @@ Large sets with steps spread across the model (Fire Station) still render small;
 - **Touching only**: attached some other way (hinges, clips, wheels on pins), amber in 3D
 - **Floating**: nothing holds it yet, what it rests on comes in a later step, red in 3D. These are the steps that look wrong
 
-On the dev server you can tick pieces and move them to the previous or next step, split a step, merge it with the next, or move it; **Save** writes `tools/kit-edits/<id>.json` and reruns `build-kit.py` (needs `data-src/<id>.mpd`). **Reset to generated** drops the edits. ✓ / ⚑ marks go to `app/public/catalog/review.json`.
+On the dev server you can tick pieces and move them to the previous or next step, split a step, merge it with the next, or move it; **Save** writes `tools/kit-edits/<id>.json` and reruns `build-kit.py` (needs `data-src/<id>.mpd`). **Reset to generated** drops the edits. ✓ / ⚑ marks go to `app/public/catalog/review.json`. Full detail (every check, how floating is worked out, known limits): [09 · Catalog & audit](09-catalog.md).
 
 ## Adding a kit
 

@@ -9,7 +9,7 @@ Stacker lives at the repo root with three parts:
 
 | Path | What |
 |---|---|
-| `app/` | The app: an IWSDK (WebXR + Three.js) project. Nearly all behavior is in `app/src/stacker-system.ts`; parts loading in `blocks.ts`; styles, finishes and environments in `look.ts`; kits list in `kits.ts`; manual pages in `manual.ts`. `catalog.html` + `src/catalog/` is the parts/kits audit page (edits via `catalog-api.ts` on the dev server) |
+| `app/` | The app: an IWSDK (WebXR + Three.js) project. Nearly all behavior is in `app/src/stacker-system.ts`; parts loading in `blocks.ts`; styles, finishes and environments in `look.ts`; kits list in `kits.ts`; manual pages in `manual.ts`. `catalog.html` + `src/catalog/` is the parts/kits audit page (edits via `catalog-api.ts` on the dev server; `docs/09-catalog.md`) |
 | `tools/` | Offline data pipeline: LDraw + Rebrickable → `app/public/parts/*`, LDraw models → `app/public/kits/*` |
 | `docs/` | Detailed docs — read `docs/README.md` first; `02-architecture.md` and `03-interaction.md` before touching the system |
 
@@ -60,7 +60,7 @@ Then add new kits to `KITS` in `app/src/kits.ts`, and check their steps in the c
 - Message: imperative subject under ~60 chars, blank line, a short body of what changed and why (bullets are fine). End with the attribution line from the current session's instructions (e.g. `Co-Authored-By: Claude …`).
 - Never commit: `data-src/`, `app/dist/`, `app/artifacts/`, `app/.spacefast/state.json`, tokens or preview links containing `/__/` keys.
 - It's a public repo: check new files for secrets before staging (`git add --dry-run .`).
-- Keep `docs/` current when behavior changes: interaction → `03`, pipeline → `04`, kits → `05`, rendering → `06`, and add a line to `08-decisions.md` for any real design choice.
+- Keep `docs/` current when behavior changes: interaction → `03`, pipeline → `04`, kits → `05`, rendering → `06`, catalog and audit checks → `09`, and add a line to `08-decisions.md` for any real design choice.
 
 ## Deploy to Spacefast
 
