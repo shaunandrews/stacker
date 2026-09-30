@@ -7,15 +7,16 @@
 
 import { iwsdkDev } from '@iwsdk/vite-plugin-dev';
 import { defineConfig } from 'vite';
+import { catalogApi } from './catalog-api';
 
 export default defineConfig({
-  plugins: [iwsdkDev()],
+  plugins: [iwsdkDev(), catalogApi()],
   server: { host: '0.0.0.0', port: Number(process.env.STACKER_PORT) || 3129, open: false },
   build: {
     outDir: 'dist',
     sourcemap: process.env.NODE_ENV !== 'production',
     target: 'esnext',
-    rollupOptions: { input: './index.html' },
+    rollupOptions: { input: { main: './index.html', catalog: './catalog.html' } },
   },
   esbuild: { target: 'esnext' },
   // @drawcall/uikitml otherwise pulls a second three/@pmndrs/uikit graph
