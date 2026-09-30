@@ -50,7 +50,12 @@ python3 dev/tests/test_build_tools.py       # grab, duplicate, select, group mov
 python3 dev/tests/test_kits.py              # shelf, ghost magnet, ghost restore, restart, shelf move, free parts, completion
 python3 dev/tests/test_panels_guidance.py   # library resize, presets, Advanced, sliders, guide line, rough drop, manual paging
 python3 dev/tests/test_desktop.py           # splash, desktop drag/place, Alt-duplicate, undo/redo, select, delete, library drop, orbit
+python3 dev/tests/test_boxes.py             # kit rack: grab a box, float, B returns it, tear the strip, kit starts, rack returns
+python3 dev/tests/test_hinges.py            # hinge + brick swing to the stop, window panes/shutters, turntable, pull-off
+python3 dev/tests/house_shots.py <prefix> [style]  # before/after render shots of a finished House (not a test)
 ```
+
+`test_desktop.py` leaves the app outside XR; run it last, or re-enter XR (`npx iwsdk xr enter`) before the XR suites. Library size, guide mode and Advanced persist across reloads — the panels test resets them itself. `hinge_setup.py` / `hinge_helpers.js` build parts through the real snap code (`place(part, color, local)`) for tests.
 
 The page opens on a splash screen (markup in `index.html`, logic in `splash.ts`); tests that enter XR through the CLI skip it automatically, and `test_desktop.py` clicks **Explore on this computer**.
 
@@ -59,22 +64,23 @@ Tips:
 - Headless Chrome caps rAF at 60 fps — the fps readout is only meaningful on the headset
 - Controller ray origin ≠ the position `animate-to` sets; tests aim with `look-at` and nudge held blocks by measuring (`carry_to` in the kit tests)
 - Browser logs accumulate across reloads — check timestamps before chasing an old error
-- Screenshots: `npx iwsdk browser screenshot --output-file artifacts/x.png` (`artifacts/` is git-ignored)
+- Screenshots: `npx iwsdk browser screenshot --output-file artifacts/x.png` (`artifacts/` is git-ignored); `dev/contact.mjs` tiles `artifacts/<prefix>-*.png` into a labelled sheet (`artifacts/sheet.json`)
+- Each `browser run` gets a fresh Playwright mouse: a drag must start and finish within one `mouse.mjs` call, or the next move reads as a release
+- Comparing looks: take both shots in one session — HDRI environments load asynchronously, so shots from a fresh page can differ
 
 ## Deploy (Spacefast)
 
 The space is `spc_faf94500d20b4e979a35db4ede374b64` (recorded in `app/.spacefast/space.json`). It's claimed and private; share it from the Spacefast dashboard.
 
+Live at <https://stacker.view.fast/>.
+
 ```bash
-cd app
-NODE_ENV=production npm run build
-cd dist && zip -qr ../../site.zip . -x "*AGENTS.md"
-curl -sS -H "x-spacefast-client: agent/direct-api" -H "Authorization: Bearer $SPACEFAST_TOKEN" \
-  --form-string "spaceId=spc_faf94500d20b4e979a35db4ede374b64" \
-  -F "archive=@../../site.zip" https://api.spacefast.com/v1/publish
+cd app && npm run typecheck && NODE_ENV=production npm run build
+cd dist && rm -f ../../site.zip && zip -qr ../../site.zip . -x "*AGENTS.md" && cd ../..
+sf publish site.zip --space spc_faf94500d20b4e979a35db4ede374b64 --wait --json -y -m "<commit>"
 ```
 
-Or install the CLI (`curl -fsSL https://spacefast.com/install.sh | bash`) and use `sf publish`. Never commit tokens. Agent instructions: <https://spacefast.com/setup.md>.
+The `sf` CLI (`npm install -g spacefast`) keeps its login in the macOS Keychain after a one-time `sf login`, so any session can publish; check with `sf whoami --json`. Don't print the publish output raw — it can contain secret preview links. Never commit tokens. Docs: <https://spacefast.com/docs/cli>. The project skill (`.claude/skills/stacker/SKILL.md`) has the full routine.
 
 Notes: unclaimed spaces don't serve `.wasm`/binary files; the claimed space serves `parts.bin` fine.
 
@@ -88,7 +94,7 @@ for f in parts part_categories colors inventory_parts inventories sets themes; d
   curl -sSL -o $f.csv.gz https://cdn.rebrickable.com/media/downloads/$f.csv.gz && gunzip -f $f.csv.gz
 done
 curl -sSL -o ldraw-complete.zip https://library.ldraw.org/library/updates/complete.zip && unzip -q ldraw-complete.zip
-for s in 7796-1 6400-1 7910-1; do curl -sSL -o $s.mpd https://library.ldraw.org/library/omr/$s.mpd; done
+for s in 7796-1 6400-1 7910-1 31028-1 6687-1 6350-1 374-1; do curl -sSL -o $s.mpd https://library.ldraw.org/library/omr/$s.mpd; done
 ```
 
 Then run the pipeline in [04 · Parts pipeline](04-parts-pipeline.md). Rebrickable allows automated CSV downloads at most once a day; don't scrape its web pages.
@@ -100,7 +106,9 @@ cd data-src && python3 ../tools/find-kits.py 25 150            # well-covered sm
 cd data-src && python3 ../tools/find-kits.py 20 90 'car|kart'   # filter by name
 ```
 
-The House was found with the default coverage search. The Go-Kart and Robot came from name searches (with coverage relaxed, since free parts don't need to be in `selection.json`). The OMR file URL pattern is `https://library.ldraw.org/library/omr/<set_num>.mpd`.
+The House was found with the default coverage search. The Go-Kart and Robot came from name searches (with coverage relaxed, since free parts don't need to be in `selection.json`). The later four were picked from the whole OMR list (1,470 models at `https://library.ldraw.org/omr/sets?page=N`) joined with Rebrickable's `sets.csv`/`themes.csv`, with box photos for review. New kits add their parts to the library, so coverage no longer matters. The OMR file URL pattern is `https://library.ldraw.org/library/omr/<set_num>.mpd`.
+
+The HDRI environments come from Poly Haven (`https://dl.polyhaven.org/file/ph-assets/HDRIs/hdr/1k/<id>_1k.hdr`, CC0) into `app/public/env/`.
 
 ## Licensing
 

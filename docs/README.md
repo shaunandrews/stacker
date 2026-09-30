@@ -2,9 +2,9 @@
 
 Stacker is a mixed-reality brick-building app for Meta Quest 3, built for the browser with WebXR. A platform floats in your room, a library panel holds real brick parts, and you build with your hands or controllers. Kits guide you through official models step by step.
 
-**Live build:** the private Spacefast space `spc_faf94500d20b4e979a35db4ede374b64` (open the preview link on the Quest). **Code:** [`app/`](../app). **Data tools:** [`tools/`](../tools).
+**Live build:** <https://stacker.view.fast/> (Spacefast space `spc_faf94500d20b4e979a35db4ede374b64`). **Code:** [`app/`](../app). **Data tools:** [`tools/`](../tools).
 
-![Library and settings panels](images/v7-panels.png)
+![A finished House kit](images/v11-house.png)
 
 ## Read in this order
 
@@ -28,8 +28,9 @@ Working prototype, tested in the IWSDK Quest 3 emulator and by hand on device:
 - Hinges, turntables, doors, window panes and shutters swing after placing, carrying whatever is built on them
 - Build / Select / Paint tools, duplicate, delete, group moves
 - Movable, tiltable, resizable platform; movable, resizable library with 3 materials (plastic, wood, clear)
-- Settings panel: 6 look presets up front; environments, tone, Hz, Stress and fine-tune sliders under Advanced
+- Settings panel: 6 look presets up front; environments, tone, Hz, Stress and fine-tune sliders (including Occlusion and Resolution) under Advanced
+- Rendering: 1.3× resolution, real HDRI environments, baked + contact ambient occlusion, plastic micro-surface, a winking-smiley stud logo
 - Splash screen with loading progress; **desktop view** (mouse + keyboard) for exploring and testing without a headset
 - Undo/redo (50 steps); confirm taps on Clear, Stress and starting a kit over a build
-- Seven kits (House, Go-Kart, Robot, Sea Plane, Turbo Prop, Pizza To Go, Fire Station) on a rack of 3D boxes: grab one, review it, tear the strip to start; ghost guidance, a parts shelf, and a paged manual
+- Seven kits (House, Go-Kart, Robot, Sea Plane, Turbo Prop, Pizza To Go, Fire Station) on a rack of 3D boxes: grab one, review it, tear the strip to start; built sub-assembly by sub-assembly; ghost guidance, a parts shelf, and a booklet-style manual (flat isometric, outlines, arrows, zoom)
 - Autosave plus 6 save slots

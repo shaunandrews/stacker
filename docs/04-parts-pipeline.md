@@ -46,7 +46,7 @@ python3 tools/build-kit.py build data-src/7910-1.mpd Robot 7910-1
 
 - Skips stickers, printed variants, glass inserts and door frames, and anything missing from LDraw
 
-Plus `tools/minifigs.json` (9 minifig parts → Minifigs tab) and `tools/kit-parts.json` (every other part the kits use → More tab). Total: **177 parts**.
+Plus `tools/special-parts.json` (Special and Windows tab parts with their joints and mounts), `tools/minifigs.json` (9 minifig parts → Minifigs tab) and `tools/kit-parts.json` (every other part the seven kits use → More tab). Total: **300 parts**.
 
 ## 2. Colors (`build-colors.py`)
 
@@ -88,7 +88,7 @@ For each part:
 
 Hinged parts get a `hinge: { p, a, r }` (pivot and axis in the baked frame, range in degrees) from `tools/hinges.json`; paired parts get `joint.mounts` from `tools/special-parts.json` (see [03](03-interaction.md#hinges-startswing)).
 
-Current output: 199 parts, ~1.8 MB binary, ~760 triangles per part on average (~420 before bevels; a 2×2 brick is 220 → 400, most of it stud rims).
+Current output: 300 parts, ~4.3 MB binary (baseplates are most of the growth), ~1,160 triangles per part on average; a 2×2 brick is 220 → 400 with bevels, most of it stud rims.
 
 ## 4. Runtime decode (`blocks.ts`)
 

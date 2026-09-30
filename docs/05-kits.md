@@ -9,12 +9,12 @@ A kit is an official model broken into steps. Stacker guides you through it with
 | Kit | Source | Pieces | Steps | Notes |
 |---|---|---|---|---|
 | House | OMR 7796-1 (2008), by Merlijn Wissink | 56 | 13 | All grid parts; steps generated bottom-up |
-| Go-Kart | OMR 6400-1 (1997) | 29 | 8 | Authored steps; wheels and the driver are free parts |
+| Go-Kart | OMR 6400-1 (1997) | 29 | 11 | Authored steps; wheels and the driver are free parts |
 | Robot | OMR 7910-1 (2004) | 25 | 8 | Built at angles — every part is free |
-| Sea Plane | OMR 31028-1 (2015) | 53 | 13 | Half-stud grid offset (auto-detected) |
-| Turbo Prop | OMR 6687-1 (1987) | 90 | 23 | Plane plus two minifigs |
-| Pizza To Go | OMR 6350-1 (1994) | 166 | 40 | Car and minifigs placed at 30°/60° (free parts) |
-| Fire Station | OMR 374-1 (1978) | 363 | 80 | Includes its own 16×32 baseplate; logo flag swapped for a plain one |
+| Sea Plane | OMR 31028-1 (2015) | 53 | 14 | Half-stud grid offset (auto-detected) |
+| Turbo Prop | OMR 6687-1 (1987) | 90 | 29 | Plane plus two minifigs |
+| Pizza To Go | OMR 6350-1 (1994) | 166 | 49 | Car and minifigs placed at 30°/60° (free parts) |
+| Fire Station | OMR 374-1 (1978) | 363 | 95 | Includes its own 16×32 baseplate; logo flag swapped for a plain one |
 
 To browse more candidates, the OMR list (1,470 models) can be joined with Rebrickable's `sets.csv`/`themes.csv` for names, years and piece counts. Technic models are a poor fit (pins and axles don't snap).
 

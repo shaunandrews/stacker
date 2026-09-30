@@ -35,7 +35,10 @@ npx iwsdk dev up --headless --ai-mode agent --allow-browser-automation
 - `dev/tests/iw.py` helpers: `probe()`, `js(code)` (runs with `s = window.stacker`), `move()`, `look()`, `btn()`, `tip_at()`, `tab_id(name)`
 - Regression tests — run the relevant ones before committing behavior changes:
   - `python3 dev/tests/test_build_tools.py` (grab, duplicate, select, group move, recolor, paint, delete, save/load)
-  - `python3 dev/tests/test_kits.py`, `python3 dev/tests/test_panels_guidance.py`, `python3 dev/tests/test_desktop.py` (mouse/keyboard view)
+  - `python3 dev/tests/test_kits.py`, `test_panels_guidance.py`, `test_boxes.py`, `test_hinges.py`, `test_desktop.py`
+  - `test_desktop.py` leaves the app outside XR — run it last, or `npx iwsdk xr enter` before the XR suites
+  - Kit completion: `s.startKit(id, title)` then `s.skipStep()` until `s.kit` is null; check the piece count (House 56, Go-Kart 29, Robot 25, Sea Plane 53, Turbo Prop 90, Pizza To Go 166, Fire Station 363)
+  - Looks: `python3 dev/tests/house_shots.py <prefix> [style]` for before/after shots; compare within one session (HDRIs load async), `python3 dev/tests/test_desktop.py` (mouse/keyboard view)
 - Quick kit check: `js('await s.startKit("7796-1","House"); ...skipStep()')` until done, then confirm the piece count (House 56, Go-Kart 29, Robot 25)
 - Screenshots: `npx iwsdk browser screenshot --output-file artifacts/x.png`; tile several with `dev/contact.mjs` (reads `artifacts/sheet.json`). `artifacts/` is git-ignored.
 - Browser logs accumulate across reloads — compare timestamps before chasing an error.

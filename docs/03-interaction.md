@@ -82,17 +82,13 @@ A carry is a list of **pieces**; `pieces[0]` is the anchor. Every other piece st
 
 Snapping is connector-based: each part's studs and sockets (from `parts.json` `conn`) are indexed in a spatial hash, and candidate landings align a carried connector with a facing one nearby, rejected when oriented boxes collide. It's recomputed only when the held pieces move more than 0.5 mm / 0.6° or the build changes. The steps below describe the kit magnet and the placement rules on top.
 
-Given the carried pieces, find where they'd land. The result is one `Placement` per piece; the preview ghost (light blue) is drawn there each frame, and releasing animates the pieces into those spots over 70 ms.
+Given the carried pieces, find where they'd land. The result is one `Placement` (a full transform) per piece; the preview ghost (light blue) is drawn there each frame, and releasing animates the pieces into those spots over 70 ms.
 
-1. **Kit magnet.** If a kit is active and you're carrying one piece, the nearest unfilled ghost of the same part and color within **6 cm** wins outright — including its exact position and angle (free placement).
-2. **Bounds.** The anchor must be over the plate (± 2 cm).
-3. **Yaw.** The anchor's yaw relative to the platform is rounded to the nearest 90°; the delta from its original turns rotates the whole group's offsets.
-4. **Footprint.** Anchor cell = `round(local / pitch − footprint / 2)`. Single blocks are clamped onto the plate; groups must fit entirely.
-5. **Height.** Two candidates from the held height `base`:
-   - *Resting*: nudge up out of any collision (≤ 6 steps), then drop while the layer below is free
-   - *Hanging*: rise until the piece's top touches the underside of something (≤ 12 steps)
-   Whichever is closer to where you're holding wins, if it's within 5 cm.
-6. Hats and hair (`overlap` parts) and free-placed parts don't take grid cells.
+1. **Kit magnet.** If a kit is active and you're carrying one piece, the nearest unfilled ghost of the same part and color within **6 cm** wins outright — including its exact position and angle.
+2. **Connector candidates.** Every stud and socket on the carried pieces looks for a facing connector of the other type within reach (≈ a stud pitch; baseplate studs count). Each pairing proposes a pose: turn the piece so the connectors face, spin it to the nearest quarter turn of the target block, translate. Downward sockets also look a few centimeters below (0–4.8 cm), as if the piece had been let go and settled onto studs underneath.
+3. **Joint candidates.** A joint *top* (hinge top, turntable top, glass, pane, shutter) proposes going exactly onto each nearby base's matching mount (see below).
+4. **Pick.** Up to 16 distinct candidates are tried; any whose oriented boxes collide with nearby blocks (or sink into the plate) are dropped. The winner engages the most connectors, then is closest to where you're holding it.
+5. Hats and hair (`overlap` parts) never collide.
 
 Heights are counted in **half plates** (4 LDU): plate = 2, brick = 6, minifig legs = 10.
 
@@ -143,6 +139,6 @@ Handles are small and translucent (55%) until a hand points at one. Platform edg
 
 Top to bottom: tool row (Build, Select, Paint, Deselect, ↶ Undo, ↷), tabs (Bricks, Plates, Tiles, Slopes, Curves, Round, Wedges, Windows, Minifigs, More, Kits, Saves), the part grid, a context row, the color swatches, credits.
 
-- Grid cells show a spinning preview. **Grab** a cell to pull out a new block; **tap** it to drop one in front of the platform.
+- Catalog cells show a spinning preview of the part. **Grab** a cell to pull out a new block; **tap** it to drop one in front of the platform.
 - The context row changes with the tab: paging (◀ Tab n/N ▶), kit controls (Exit / ↺ Restart step / Skip ▶), or saves (Save / Slot n / Load).
 - Minifigs tab: 6 presets. Grabbing one carries legs + torso + head + headgear as one stacked group.
