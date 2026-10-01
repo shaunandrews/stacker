@@ -12,8 +12,8 @@ Stacker does its own input handling on top of IWSDK's raw input: controller pose
 | Duplicate what you're pointing at | Hold A / X — carry — let go to place. Or hold A / X and squeeze grip: the copy is held by the grip, so you can let go of A and turn it with the stick | Hold thumb + middle-finger pinch |
 | Select | Hold B / Y and pull the trigger on blocks (keep the trigger held and sweep to select more; on a selected block it deselects). The outline turns cyan while B / Y is held | Select tool |
 | Delete | Tap B / Y on a block (deletes on release), or press it while holding | Drop it on the library panel (it turns red) |
-| Turn held block 90° | Thumbstick left / right | Rotate your wrist |
-| Tip held block 90° | Thumbstick up / down | Rotate your wrist |
+| Turn held block 90° | Thumbstick left / right (about the platform's up) | Rotate your wrist |
+| Tip held block 90° | Thumbstick up / down (about the platform axis nearest your controller's side) | Rotate your wrist |
 | Undo / redo | ↶ Undo / ↷ on the library's tool row | Same |
 | Move platform / tilt it | Grab a white edge bar | Pinch an edge bar |
 | Turn / scale platform | Hold an edge bar, grab a second edge (or the plate) with the other hand: turn your hands around each other, spread or close them | Same, with two pinches |
@@ -76,7 +76,7 @@ The target gets a white shell outline (tinted with the paint color in Paint mode
 
 A carry is a list of **pieces**; `pieces[0]` is the anchor. Every other piece stores its offset from the anchor (`offPos`/`offQuat` for display; `d2x`, `d2z`, `dl` in grid terms for snapping). A single block is just a one-piece carry, so groups and minifigs use the same code.
 
-- **Controllers** keep the block's rotation relative to the controller from when it was grabbed; far grabs hold it 8 cm out along the ray. The thumbstick turns it in quarter turns: left/right about the platform's up, up/down tips it.
+- **Controllers** keep the block's rotation relative to the controller from when it was grabbed; far grabs hold it 8 cm out along the ray. The first thumbstick flick **squares the block to the platform** (`turnAligned`): its rotation in the platform's frame rounds to the nearest whole quarter turns (`squareUp`), and from then on the wrist no longer turns it, only the stick. Left/right spins it a quarter turn about the platform's up; up/down tips it about the platform's X or Z axis, whichever is nearer the controller's side, so tipping away always tips away from you. While squared up, a small axis guide sits on the block (platform X red, Y green, Z blue), and each turn flashes a ring around its axis in that axis's color. Because the block is already on whole quarter turns, the snap lands it exactly as shown.
 - **Mouse** holds keep a world rotation; Q/E and the arrows turn it the same way.
 - **Hands** keep the grip where it was taken (far grabs fly to the pinch point) and follow the wrist's full rotation, smoothed harder than controllers to hide tracking jitter.
 - Grabbing a placed block removes it from its batch and spawns a loose mesh at the same pose.

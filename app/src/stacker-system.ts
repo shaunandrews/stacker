@@ -37,6 +37,7 @@ import {
   Quaternion,
   SphereGeometry,
   SRGBColorSpace,
+  TorusGeometry,
   Vector3,
   VisibilityState,
 } from '@iwsdk/core';
@@ -135,6 +136,32 @@ const SLIDERS: SliderDef[] = [
 ];
 
 /** Slider values a style implies. */
+/**
+ * The nearest rotation made of whole quarter turns: each axis of `q` rounded to the
+ * nearest of ±X, ±Y, ±Z (largest component first, so the result is a proper rotation).
+ */
+function squareUp(q: Quaternion): Quaternion {
+  const m = new Matrix4().makeRotationFromQuaternion(q).elements;
+  const cols = [0, 1, 2].map((c) => new Vector3(m[c * 4], m[c * 4 + 1], m[c * 4 + 2]));
+  const out: Array<Vector3 | null> = [null, null, null];
+  const usedAxes = new Set<number>();
+  // Round the column with the most decisive component first.
+  const order = [0, 1, 2].sort((a, b) => Math.max(...cols[b].toArray().map(Math.abs)) - Math.max(...cols[a].toArray().map(Math.abs)));
+  for (const c of order.slice(0, 2)) {
+    const v = cols[c].toArray();
+    let best = -1;
+    for (let k = 0; k < 3; k++) if (!usedAxes.has(k) && (best < 0 || Math.abs(v[k]) > Math.abs(v[best]))) best = k;
+    usedAxes.add(best);
+    const r = new Vector3();
+    r.setComponent(best, Math.sign(v[best]) || 1);
+    out[c] = r;
+  }
+  const missing = [0, 1, 2].find((c) => !out[c])!;
+  const [a, b] = [(missing + 1) % 3, (missing + 2) % 3];
+  out[missing] = new Vector3().crossVectors(out[a]!, out[b]!);
+  return new Quaternion().setFromRotationMatrix(new Matrix4().makeBasis(out[0]!, out[1]!, out[2]!));
+}
+
 function styleValues(k: number): Record<string, number> {
   const st = STYLES[k];
   return {
@@ -332,6 +359,12 @@ interface HandState {
   selectSweep: 'add' | 'remove' | null; // B/Y + trigger held: blocks swept over join (or leave) the selection
   fromSelection: boolean;
   rotTarget: Quaternion; // controller: where the held block's rotation is easing to
+  aligned: boolean; // controller: the stick squared the held block to the platform's axes (wrist no longer turns it)
+  alignQ: Quaternion; // its rotation in the platform's frame, whole quarter turns
+  alignCur: Quaternion; // eases toward alignQ
+  axes: LineSegments; // platform X/Y/Z guide on the held block while aligned
+  turnRing: Mesh; // ring around the axis of the last turn
+  turnShow: number; // seconds the ring stays up
   painting: boolean;
   slider: UiItem | null;
   frame: FrameKind | null;
@@ -2432,7 +2465,15 @@ export class StackerSystem extends createSystem({}) {
     guide.renderOrder = 21;
     const pinchRing = new Mesh(new RingGeometry(0.8, 1, 24), new MeshBasicMaterial({ color: 0xffffff, transparent: true, depthTest: false }));
     pinchRing.renderOrder = 22;
-    for (const m of [outline, ray, cursor, guide, pinchRing]) {
+    // Turning guides: the platform's axes (X red, Y green, Z blue) and a ring around the turn's axis.
+    const axesGeo = new BufferGeometry();
+    axesGeo.setAttribute('position', new BufferAttribute(new Float32Array([0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1]), 3));
+    axesGeo.setAttribute('color', new BufferAttribute(new Float32Array([1, 0.3, 0.3, 1, 0.3, 0.3, 0.3, 1, 0.4, 0.3, 1, 0.4, 0.35, 0.6, 1, 0.35, 0.6, 1]), 3));
+    const axes = new LineSegments(axesGeo, new LineBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.9, depthTest: false }));
+    axes.renderOrder = 21;
+    const turnRing = new Mesh(new TorusGeometry(1, 0.03, 6, 40), new MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.8, depthTest: false }));
+    turnRing.renderOrder = 21;
+    for (const m of [outline, ray, cursor, guide, pinchRing, axes, turnRing]) {
       this.world.createTransformEntity(m, { persistent: true });
       m.visible = false;
     }
@@ -2480,6 +2521,12 @@ export class StackerSystem extends createSystem({}) {
       selectSweep: null,
       fromSelection: false,
       rotTarget: new Quaternion(),
+      aligned: false,
+      alignQ: new Quaternion(),
+      alignCur: new Quaternion(),
+      axes,
+      turnRing,
+      turnShow: 0,
       painting: false,
       slider: null,
       frame: null,
@@ -2710,6 +2757,7 @@ export class StackerSystem extends createSystem({}) {
 
   private updateHand(h: HandState, delta: number): void {
     this.readInput(h);
+    h.axes.visible = h.turnRing.visible = false; // holdPieces shows them while turning
     for (const b of h.down) h.held.add(b);
     for (const b of h.up) h.held.delete(b);
     for (const g of h.ghosts) g.visible = false;
@@ -3433,6 +3481,8 @@ export class StackerSystem extends createSystem({}) {
     this.q1.copy(h.quat).invert();
     h.offsetQuat.copy(this.q1).multiply(anchor.quaternion);
     h.rotTarget.copy(h.offsetQuat);
+    h.aligned = false;
+    h.turnShow = 0;
     if (h.mode === 'mouse') {
       // Desktop holds keep their world rotation (see turnHeld).
       h.offsetQuat.copy(anchor.quaternion);
@@ -3449,16 +3499,23 @@ export class StackerSystem extends createSystem({}) {
     if (h.mode === 'controller') {
       const pad = this.input.xr.gamepads[h.hand];
       if (pad) {
-        // Thumbstick: left/right spins the block a quarter turn about up; up/down tips it.
-        if (pad.getAxesEnteringLeft(InputComponent.Thumbstick)) this.turnHeld(h, 'spin', 1);
-        if (pad.getAxesEnteringRight(InputComponent.Thumbstick)) this.turnHeld(h, 'spin', -1);
-        if (pad.getAxesEnteringUp(InputComponent.Thumbstick)) this.turnHeld(h, 'tip', -1);
-        if (pad.getAxesEnteringDown(InputComponent.Thumbstick)) this.turnHeld(h, 'tip', 1);
+        // Thumbstick: left/right spins the block a quarter turn about the platform's up;
+        // up/down tips it about the platform axis nearest the controller's side. The first
+        // flick squares the block to the platform (see alignHeld).
+        if (pad.getAxesEnteringLeft(InputComponent.Thumbstick)) this.turnAligned(h, 'spin', 1);
+        if (pad.getAxesEnteringRight(InputComponent.Thumbstick)) this.turnAligned(h, 'spin', -1);
+        if (pad.getAxesEnteringUp(InputComponent.Thumbstick)) this.turnAligned(h, 'tip', -1);
+        if (pad.getAxesEnteringDown(InputComponent.Thumbstick)) this.turnAligned(h, 'tip', 1);
       }
-      h.offsetQuat.slerp(h.rotTarget, 1 - Math.exp(-delta * 18));
       this.v1.copy(h.rayOrigin).addScaledVector(h.rayDir, HOLD_DIST);
       if (h.offsetPos.lengthSq() > 0) this.v1.copy(h.offsetPos).applyQuaternion(h.quat).add(h.point);
-      this.q1.copy(h.quat).multiply(h.offsetQuat);
+      if (h.aligned) {
+        h.alignCur.slerp(h.alignQ, 1 - Math.exp(-delta * 18));
+        this.q1.copy(this.root.object3D!.quaternion).multiply(h.alignCur);
+      } else {
+        h.offsetQuat.slerp(h.rotTarget, 1 - Math.exp(-delta * 18));
+        this.q1.copy(h.quat).multiply(h.offsetQuat);
+      }
       rate = FOLLOW_CTRL;
     } else if (h.mode === 'mouse') {
       const d = this.desktop;
@@ -3486,6 +3543,7 @@ export class StackerSystem extends createSystem({}) {
     }
 
     h.overTrash = this.overLibrary(anchor.position);
+    this.drawTurnGuides(h, pieces, delta);
 
     // Kit guidance: light up where this piece goes and draw a line to it.
     if (this.kit && pieces.length === 1) {
@@ -3526,6 +3584,55 @@ export class StackerSystem extends createSystem({}) {
       this.placedWorldPose(h.snapShown[k], g.position, g.quaternion);
       g.scale.setScalar(this.scale);
       g.visible = true;
+    }
+  }
+
+  /**
+   * Controller turns. The first one squares the held block to the platform: its rotation
+   * in the platform's frame rounds to the nearest whole quarter turns and stops following
+   * the wrist. Then spin turns it about the platform's up; tip turns it about whichever
+   * platform axis (X or Z) lines up best with the controller's side, so "tip away" always
+   * tips away from you. Snapping then lands it exactly as shown.
+   */
+  private turnAligned(h: HandState, how: 'spin' | 'tip', dir: number): void {
+    const rootQ = this.root.object3D!.quaternion;
+    if (!h.aligned) {
+      const anchor = h.pieces![0].block.mesh;
+      h.alignCur.copy(rootQ).invert().multiply(anchor.quaternion);
+      h.alignQ.copy(squareUp(h.alignCur));
+      h.aligned = true;
+    }
+    const axis = this.v2;
+    if (how === 'spin') axis.set(0, 1, 0);
+    else {
+      // The controller's side, in the platform's frame: tip about X or Z, whichever it's nearer.
+      const side = this.v3.set(1, 0, 0).applyQuaternion(h.quat).applyQuaternion(this.q2.copy(rootQ).invert());
+      axis.set(Math.abs(side.x) >= Math.abs(side.z) ? Math.sign(side.x) || 1 : 0, 0, Math.abs(side.x) >= Math.abs(side.z) ? 0 : Math.sign(side.z) || 1);
+    }
+    h.alignQ.premultiply(this.q2.setFromAxisAngle(axis, (dir * Math.PI) / 2));
+    // Ring around the turn's axis, in the axis's color.
+    h.turnRing.quaternion.copy(rootQ).multiply(this.q2.setFromUnitVectors(this.v3.set(0, 0, 1), axis));
+    (h.turnRing.material as MeshBasicMaterial).color.setHex(how === 'spin' ? 0x4dff66 : Math.abs(axis.x) > 0 ? 0xff4d4d : 0x598fff);
+    h.turnShow = 0.6;
+    this.tick(0.2);
+  }
+
+  /** The platform-axis guide on a squared-up held block, and the ring after a turn. */
+  private drawTurnGuides(h: HandState, pieces: Piece[], delta: number): void {
+    const show = h.aligned && h.mode === 'controller';
+    h.axes.visible = show;
+    h.turnShow = Math.max(0, h.turnShow - delta);
+    h.turnRing.visible = show && h.turnShow > 0;
+    if (!show) return;
+    const anchor = pieces[0].block.mesh;
+    const r = this.halfExtents(pieces[0].block.part, this.v3).length() * this.scale;
+    h.axes.position.copy(anchor.position);
+    h.axes.quaternion.copy(this.root.object3D!.quaternion);
+    h.axes.scale.setScalar(Math.max(0.02, r * 1.5));
+    if (h.turnRing.visible) {
+      h.turnRing.position.copy(anchor.position);
+      h.turnRing.scale.setScalar(Math.max(0.015, r * 1.15));
+      (h.turnRing.material as MeshBasicMaterial).opacity = Math.min(1, h.turnShow / 0.3) * 0.8;
     }
   }
 
