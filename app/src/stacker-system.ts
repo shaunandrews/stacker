@@ -340,7 +340,7 @@ interface UiItem {
 }
 
 type TargetKind = 'placed' | 'loose' | 'cell' | 'ui' | 'edge' | 'corner' | 'bar' | 'resize' | 'box' | 'tear' | 'pull' | 'camera' | 'spin' | 'prop';
-type PropKind = 'jar' | 'tile' | 'prev' | 'next' | 'face';
+type PropKind = 'jar' | 'tile' | 'prev' | 'next' | 'face' | 'kitPrev' | 'kitNext';
 
 interface Target {
   kind: TargetKind;
@@ -439,8 +439,9 @@ interface KitState {
   zoom: number; // manual page zoom level (index into MANUAL_ZOOM)
   di: number;
   dj: number;
-  remaining: Array<{ rec: Placed; ghost: Entity }>;
-  matched: Map<Placed, Placed>;
+  remaining: Array<{ rec: Placed; ghost: Entity; idx: number }>; // ghosts still open on the step you're on
+  done: boolean[][]; // per step, per piece: matched by something placed (any step can be visited, in any order)
+  matched: Map<Placed, { step: number; idx: number }>;
   stepPlaced: Placed[];
   spawned: Loose[];
 }
@@ -548,6 +549,7 @@ export class StackerSystem extends createSystem({}) {
   // Kit shelf
   private shelf: Entity | null = null;
   private shelfBar: Object3D | null = null;
+  private shelfArrows: Mesh[] = []; // ◀ ▶ on the kit shelf's label
   private shelfCanvas!: HTMLCanvasElement;
   private shelfTex!: CanvasTexture;
   private shelfItems: Array<{ block: Loose; pos: Vector3 }> = [];
@@ -1291,7 +1293,7 @@ export class StackerSystem extends createSystem({}) {
       ['slot:prev', 'slot', 'slot:next'],
       ['save', 'load'],
     ];
-    if (this.kit) rows.push(['kit:exit', 'kit:restart', 'kit:skip']);
+    if (this.kit) rows.push(['kit:prev', 'kit:step', 'kit:next'], ['kit:exit', 'kit:restart', 'kit:skip']);
     const rh = 0.024;
     const h = rows.length * (rh + GAP) - GAP + 2 * MARGIN;
     if (Math.abs(h - p.h) > 1e-4) {
@@ -1302,12 +1304,12 @@ export class StackerSystem extends createSystem({}) {
     const inner = p.w - 2 * MARGIN;
     let y = p.h / 2 - MARGIN;
     for (const ids of rows) {
-      const wts = ids.map((id) => (id === 'slot' ? 2.4 : id.startsWith('slot:') ? 0.6 : 1));
+      const wts = ids.map((id) => (id === 'slot' || id === 'kit:step' ? 2.4 : id.startsWith('slot:') || id === 'kit:prev' || id === 'kit:next' ? 0.6 : 1));
       const unit = (inner - (ids.length - 1) * GAP) / wts.reduce((a, b) => a + b, 0);
       let x = left;
       ids.forEach((id, k) => {
         const w = unit * wts[k];
-        this.addUi(p, id, id === 'slot' ? 'label' : 'button', 0, x + w / 2, y - rh / 2, w, rh);
+        this.addUi(p, id, id === 'slot' || id === 'kit:step' ? 'label' : 'button', 0, x + w / 2, y - rh / 2, w, rh);
         x += w + GAP;
       });
       y -= rh + GAP;
@@ -1488,6 +1490,10 @@ export class StackerSystem extends createSystem({}) {
       case 'face':
         this.drum.target = this.drum.angle - this.drum.faceAngle(prop.value);
         break;
+      case 'kitPrev':
+      case 'kitNext':
+        if (this.kit) this.goToStep(this.kit.step + (prop.type === 'kitNext' ? 1 : -1));
+        return;
     }
     this.tick(0.25);
   }
@@ -1515,6 +1521,15 @@ export class StackerSystem extends createSystem({}) {
             break;
           }
         }
+      }
+      if (!key && h.mode === 'hand') {
+        this.shelfArrows.forEach((m, i) => {
+          const lo = m.worldToLocal(this.v3.copy(tip));
+          if (!key && Math.abs(lo.x) < 0.022 && Math.abs(lo.y) < 0.022 && Math.abs(lo.z) < 0.01) {
+            key = i ? 'kitNext' : 'kitPrev';
+            prop = { type: key as PropKind, value: 0 };
+          }
+        });
       }
       if (!key && h.mode === 'hand') {
         const k = this.drum.frontFace();
@@ -1747,7 +1762,15 @@ export class StackerSystem extends createSystem({}) {
       case 'kit:restart':
         return '↺ Restart';
       case 'kit:skip':
-        return 'Skip ▶';
+        return 'Place it';
+      case 'kit:prev':
+        return '◀';
+      case 'kit:next':
+        return '▶';
+      case 'kit:step': {
+        const k = this.kit;
+        return k ? `Step ${k.step + 1} of ${k.steps.length}${k.done[k.step].every((d) => d) ? ' ✓' : ''}` : '';
+      }
       case 'controls':
         return this.controlsOpen ? 'Controls ▾' : 'Controls ▸';
       case 'credits':
@@ -1758,8 +1781,12 @@ export class StackerSystem extends createSystem({}) {
         return '▶';
       case 'man:title':
         return this.kit ? `${this.kit.title} · step ${this.kit.page + 1} of ${this.kit.steps.length}` : '';
-      case 'man:here':
-        return this.kit && this.kit.page !== this.kit.step ? `Now: step ${this.kit.step + 1}` : 'Current step';
+      case 'man:here': {
+        const k = this.kit;
+        if (!k) return '';
+        const open = this.nextOpenStep(0);
+        return open >= 0 && open !== k.step ? `To do: step ${open + 1}` : `${k.done[k.step].filter((d) => !d).length} left`;
+      }
       case 'man:zoomin':
         return '+';
       case 'man:zoomout':
@@ -1850,7 +1877,7 @@ export class StackerSystem extends createSystem({}) {
         ctx.roundRect(3, 3, width - 6, height - 6, height * 0.3);
         ctx.fill();
       }
-      ctx.fillStyle = off ? '#5b6475' : passive && item.id === 'slot' ? '#e2e8f0' : passive ? '#8b95a8' : '#ffffff';
+      ctx.fillStyle = off ? '#5b6475' : passive && (item.id === 'slot' || item.id === 'kit:step') ? '#e2e8f0' : passive ? '#8b95a8' : '#ffffff';
       const heading = passive && item.id.startsWith('head:');
       ctx.font = `${heading ? 700 : 600} ${Math.round(height * (heading ? 0.6 : 0.42))}px system-ui, sans-serif`;
       ctx.textAlign = heading ? 'left' : 'center';
@@ -2000,18 +2027,22 @@ export class StackerSystem extends createSystem({}) {
       case 'kit:skip':
         this.skipStep();
         break;
+      case 'kit:prev':
+      case 'kit:next':
+        if (this.kit) this.goToStep(this.kit.step + (id === 'kit:next' ? 1 : -1));
+        break;
       case 'controls':
         this.controlsOpen = !this.controlsOpen;
         this.layoutSettings();
         break;
       case 'man:prev':
-        if (this.kit && this.kit.page > 0) this.showPage(this.kit.page - 1);
+        if (this.kit) this.goToStep(this.kit.step - 1);
         break;
       case 'man:next':
-        if (this.kit && this.kit.page < this.kit.steps.length - 1) this.showPage(this.kit.page + 1);
+        if (this.kit) this.goToStep(this.kit.step + 1);
         break;
       case 'man:here':
-        if (this.kit) this.showPage(this.kit.step);
+        if (this.kit && this.nextOpenStep(0) >= 0) this.goToStep(this.nextOpenStep(0));
         break;
       case 'man:zoomin':
       case 'man:zoomout':
@@ -2324,10 +2355,16 @@ export class StackerSystem extends createSystem({}) {
     if (k >= 0) this.placedRecs.splice(k, 1);
     this.selection.delete(rec);
     this.dirty = this.shadowDirty = this.edited = true;
-    const target = this.kit?.matched.get(rec);
-    if (target) {
-      this.kit!.matched.delete(rec);
-      this.addGhost(target);
+    const m = this.kit?.matched.get(rec);
+    if (m) {
+      const kit = this.kit!;
+      kit.matched.delete(rec);
+      kit.done[m.step][m.idx] = false;
+      if (m.step === kit.step) {
+        const ghost = this.kitRec(kit.steps[m.step][m.idx]);
+        if (ghost) this.addGhost(ghost, m.idx);
+      }
+      this.drawShelfLabel();
     }
   }
 
@@ -3185,6 +3222,10 @@ export class StackerSystem extends createSystem({}) {
     if (this.shelfBar) {
       const sc = this.probeObject(h, this.shelfBar, 0.05, 0.011, 0.011, far);
       if (sc < limit) best = this.consider(best, { kind: 'bar', frame: 'shelf', obj: this.shelfBar, score: sc });
+      this.shelfArrows.forEach((m, k) => {
+        const sa = this.probeMesh(h, m, far);
+        if (sa < limit) best = this.consider(best, { kind: 'prop', prop: { type: k ? 'kitNext' : 'kitPrev', value: 0 }, obj: m, score: sa });
+      });
     }
     if (this.rackShown()) {
       const sc = this.probeObject(h, this.rackBar!, 0.055, 0.011, 0.011, far);
@@ -4305,6 +4346,7 @@ export class StackerSystem extends createSystem({}) {
       di: Math.round((this.bounds.x0 + this.bounds.x1) / 2 - (minI + maxI) / 2),
       dj: Math.round((this.bounds.z0 + this.bounds.z1) / 2 - (minJ + maxJ) / 2),
       remaining: [],
+      done: data.steps.map((st) => st.map(() => false)),
       matched: new Map(),
       stepPlaced: [],
       spawned: [],
@@ -4336,32 +4378,56 @@ export class StackerSystem extends createSystem({}) {
     return g;
   }
 
-  private addGhost(rec: Placed): void {
+  private addGhost(rec: Placed, idx: number): void {
     const lines = new LineSegments(this.edgeGeo(rec.part), this.ghostLineMat);
     this.localMatrix(rec, lines.matrix);
     lines.matrix.decompose(lines.position, lines.quaternion, lines.scale);
     lines.renderOrder = 5;
     lines.visible = this.instructions !== 'manual';
-    this.kit!.remaining.push({ rec, ghost: this.child(this.root, lines) });
+    this.kit!.remaining.push({ rec, ghost: this.child(this.root, lines), idx });
   }
 
+  /** Show the step you're on: ghosts and shelf pieces for whatever in it isn't placed yet. */
   private beginStep(): void {
     const kit = this.kit!;
     for (const r of kit.remaining) r.ghost.destroy();
     kit.remaining = [];
-    kit.matched.clear();
     kit.stepPlaced = [];
     const items: Array<{ part: number; color: number }> = [];
-    for (const b of kit.steps[kit.step]) {
+    kit.steps[kit.step].forEach((b, idx) => {
+      if (kit.done[kit.step][idx]) return;
       const rec = this.kitRec(b);
-      if (!rec) continue;
-      this.addGhost(rec);
+      if (!rec) return;
+      this.addGhost(rec, idx);
       items.push({ part: rec.part, color: rec.color });
-    }
+    });
     this.fillShelf(items);
     this.drawShelfLabel();
-    if (this.manual && kit.page === kit.step - 1) this.showPage(kit.step);
+    if (this.manual) this.showPage(kit.step);
     this.redrawUi();
+  }
+
+  /** Go to any step: the pieces still on the shelf go back, that step's come out. Parked and placed pieces stay. */
+  private goToStep(n: number): void {
+    const kit = this.kit;
+    if (!kit) return;
+    n = Math.max(0, Math.min(kit.steps.length - 1, n));
+    if (n === kit.step) return;
+    this.clearShelf(false);
+    kit.step = n;
+    this.uiTick();
+    this.tick(0.2);
+    this.beginStep();
+  }
+
+  /** The first step (from here, wrapping round) with pieces still to place; −1 when they're all done. */
+  private nextOpenStep(from: number): number {
+    const kit = this.kit!;
+    for (let k = 0; k < kit.steps.length; k++) {
+      const n = (from + k) % kit.steps.length;
+      if (kit.done[n].some((d) => !d)) return n;
+    }
+    return -1;
   }
 
   private kitCheck(rec: Placed): void {
@@ -4371,9 +4437,12 @@ export class StackerSystem extends createSystem({}) {
     let k = rec.target ? kit.remaining.findIndex((r) => r.rec === rec.target) : -1;
     if (k < 0) k = kit.remaining.findIndex(({ rec: g }) => this.samePlacement(g, rec));
     if (k < 0) return;
-    kit.matched.set(rec, kit.remaining[k].rec);
-    kit.remaining[k].ghost.destroy();
+    const { idx, ghost } = kit.remaining[k];
+    kit.done[kit.step][idx] = true;
+    kit.matched.set(rec, { step: kit.step, idx });
+    ghost.destroy();
     kit.remaining.splice(k, 1);
+    this.drawShelfLabel();
     if (kit.remaining.length === 0) this.nextStep();
   }
 
@@ -4390,33 +4459,45 @@ export class StackerSystem extends createSystem({}) {
     return Math.abs(yaw - Math.round(yaw / step) * step) < 0.17;
   }
 
+  /** A step's done: chime, and on to the next one with pieces left (the kit's finished when none are). */
   private nextStep(): void {
     const kit = this.kit!;
-    this.clearShelf();
-    kit.step++;
     this.chime();
-    if (kit.step >= kit.steps.length) {
+    const next = this.nextOpenStep(kit.step + 1);
+    if (next < 0) {
+      this.clearShelf(true);
       this.finishKit();
       return;
     }
+    this.clearShelf(false);
+    kit.step = next;
     this.beginStep();
   }
 
+  /** Take back everything placed for this step and refill the shelf. */
   private restartStep(): void {
     const kit = this.kit;
     if (!kit) return;
-    kit.matched.clear();
+    for (const [rec, m] of [...kit.matched]) {
+      if (m.step !== kit.step) continue;
+      kit.matched.delete(rec);
+      if (this.placedRecs.includes(rec)) this.removePlaced(rec);
+    }
     for (const rec of kit.stepPlaced) if (this.placedRecs.includes(rec)) this.removePlaced(rec);
-    this.clearShelf();
+    kit.done[kit.step].fill(false);
+    this.clearShelf(false);
     this.beginStep();
   }
 
+  /** Place the rest of this step for you. */
   private skipStep(): void {
     const kit = this.kit;
     if (!kit) return;
-    for (const { rec, ghost } of [...kit.remaining]) {
+    for (const { rec, ghost, idx } of [...kit.remaining]) {
       ghost.destroy();
       this.addPlaced(rec);
+      kit.done[kit.step][idx] = true;
+      kit.matched.set(rec, { step: kit.step, idx });
     }
     kit.remaining = [];
     this.nextStep();
@@ -4538,6 +4619,14 @@ export class StackerSystem extends createSystem({}) {
     const label = new Mesh(new PlaneGeometry(SHELF_W, SHELF_W / 8), new MeshBasicMaterial({ map: this.shelfTex, toneMapped: false, transparent: true }));
     label.position.set(0, SHELF_W / 16, -SHELF_D / 2);
     this.shelfParts.push(this.child(this.shelf, label));
+    // ◀ ▶ at the label's ends: page through the steps.
+    this.shelfArrows = [-1, 1].map((side) => {
+      const m = new Mesh(new BoxGeometry(SHELF_W / 8, SHELF_W / 8, 0.01), new MeshBasicMaterial());
+      m.visible = false;
+      m.position.set((side * (SHELF_W - SHELF_W / 8)) / 2, SHELF_W / 16, -SHELF_D / 2);
+      this.shelfParts.push(this.child(this.shelf!, m));
+      return m;
+    });
     this.placeShelf();
   }
 
@@ -4567,17 +4656,19 @@ export class StackerSystem extends createSystem({}) {
     for (const e of gone) e.destroy();
     this.built = this.built.filter((e) => !gone.has(e));
     this.shelfParts = [];
+    this.shelfArrows = [];
     this.shelf = null;
     this.shelfBar = null;
   }
 
-  private clearShelf(): void {
+  /** Put away what's still on the shelf; `all` also clears pieces taken off it and parked in the air. */
+  private clearShelf(all = true): void {
     const kit = this.kit;
     for (const item of [...this.shelfItems]) this.dropLoose(item.block, true);
     this.shelfItems = [];
     if (kit) {
-      for (const l of kit.spawned) if (this.loose.includes(l) && !this.isCarried(l)) this.dropLoose(l, true);
-      kit.spawned = [];
+      if (all) for (const l of kit.spawned) if (this.loose.includes(l) && !this.isCarried(l)) this.dropLoose(l, true);
+      kit.spawned = kit.spawned.filter((l) => this.loose.includes(l));
     }
   }
 
@@ -4632,8 +4723,16 @@ export class StackerSystem extends createSystem({}) {
     ctx.font = '600 30px system-ui, sans-serif';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.fillText(`${this.kit.title} · step ${this.kit.step + 1} of ${this.kit.steps.length}`, 256, 34);
+    const kit = this.kit;
+    const left = kit.done[kit.step].filter((d) => !d).length;
+    ctx.fillText(`${kit.title} · step ${kit.step + 1} of ${kit.steps.length}${left ? '' : ' ✓'}`, 256, 34, 400);
+    ctx.font = '800 34px system-ui, sans-serif';
+    ctx.fillStyle = kit.step > 0 ? '#ffffff' : 'rgba(255,255,255,0.25)';
+    ctx.fillText('◀', 30, 34);
+    ctx.fillStyle = kit.step < kit.steps.length - 1 ? '#ffffff' : 'rgba(255,255,255,0.25)';
+    ctx.fillText('▶', 482, 34);
     this.shelfTex.needsUpdate = true;
+    this.redrawUi((u) => u.id.startsWith('kit:') || u.id.startsWith('man:'));
   }
 
   // ---- kit boxes

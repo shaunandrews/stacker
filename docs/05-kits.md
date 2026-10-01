@@ -97,18 +97,20 @@ Starting a kit (a box, or Library → Kits → a kit):
 - Within **6 cm** the piece jumps in exactly — position and angle. This is how free parts (wheels, arms, hinges) get placed, and why you never have to tilt a piece yourself
 - Kit models are trusted: a ghost always accepts its piece even if bounding boxes overlap on the grid (e.g. wheel holders hanging below a plate)
 
-### Matching and progress
+### Build it your way
 
-- A placement fills a ghost if it was magnet-snapped to it, or if it lands on the same cell/level/footprint with the same part and color (rotation only matters for asymmetric parts — see `isSymmetric`)
-- Filling every ghost in the step → chime → next step (shelf refills, new ghosts)
-- Pulling a matched piece back off brings its ghost back
-- **↺ Restart step** takes back everything placed this step and refills the shelf
-- **Skip ▶** places the rest of the step for you
+You don't have to finish a step to see the next one. Page to any step with **◀ ▶** on the kit shelf's label, on the wrist menu (left palm up), or on the manual: the pieces still on the shelf go back, that step's come out, and its ghosts show. Pieces you've taken off the shelf and parked stay where they are, and pieces can be placed anywhere, on a ghost or not.
+
+- Each step remembers which of its pieces are done (`KitState.done`): a placement fills a ghost if it was magnet-snapped to it, or lands on the same cell/level/footprint with the same part and color (rotation only matters for asymmetric parts, see `isSymmetric`). Coming back to a step shows only what's left; a finished step says ✓
+- Filling every ghost in the step you're on → chime → on to the next step with pieces left (wrapping round). The kit finishes when every step is done, in whatever order
+- Pulling a matched piece back off reopens its ghost (shown if you're on that step)
+- **↺ Restart** takes back everything placed for this step and refills the shelf
+- **Place it** places the rest of this step for you
 - **Exit kit** clears ghosts and the shelf (the build stays)
 
 ### Shelf
 
-A tray to the right of the platform (or where the box was opened), tilted toward you, with a grab bar and a "Title · step n of N" label. Pieces are laid out in rows spaced by their real size — anything bigger than 7.5 cm (baseplates) shrunk to fit, full size again once picked up — and stay attached to the tray as you move it until you pick them up.
+A tray to the right of the platform (or where the box was opened), tilted toward you, with a grab bar and a "Title · step n of N" label with ◀ ▶ at its ends. Pieces are laid out in rows spaced by their real size — anything bigger than 7.5 cm (baseplates) shrunk to fit, full size again once picked up — and stay attached to the tray as you move it until you pick them up.
 
 ### Instructions modes (Settings → Guide)
 
@@ -130,7 +132,7 @@ The magnet stays on in every mode, so free parts can still be placed.
 - Small models are framed whole; once the model is much bigger than the step, the view zooms to the step's parts
 - Pages are drawn by `ManualPainter` (`manual.ts`) in the same throwaway WebGL context as the box art (`ArtRenderer.renderIso`), kept while the manual is open. The catalog uses the same painter, so what you audit there is what the headset shows
 - **−/+** zoom the page in on the step's parts (1×, 1.7×, 2.8×, 4.5×); line weight follows how big a stud is drawn, bold up close and fine when everything's small. Pages render at 2048 px wide.
-- ◀ / ▶ page freely; the middle button jumps back to the step you're on; it follows along automatically when you complete a step
+- ◀ / ▶ change the step you're on (the shelf and ghosts follow); the middle button shows what's left, or jumps to the first step with pieces left
 
 Large sets with steps spread across the model (Fire Station) still render small; the pages are only as good as the model's authored steps.
 
