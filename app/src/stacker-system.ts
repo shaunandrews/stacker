@@ -50,6 +50,7 @@ import type { ArtPiece } from './kit-boxes.js';
 import { KITS, kitPiece } from './kits.js';
 import type { KitBlock } from './kits.js';
 import { MANUAL_ZOOM, ManualPainter } from './manual.js';
+import { DIM_LEVELS, PULL_CLICK, PULL_MAX, PullLamp } from './lamp.js';
 import { HDRLoader } from 'three/examples/jsm/loaders/HDRLoader.js';
 import { CONTACT, envId, ENVS, finishIndex, FINISHES, makeBackdrop, makeEnvScene, makeFinish, OCCLUSION, paintBackdrop, patchBlockShader, STYLES } from './look.js';
 import { progress } from './splash.js';
@@ -301,7 +302,7 @@ interface UiItem {
   slot?: [InstancedMesh, number]; // swatches: their instance
 }
 
-type TargetKind = 'placed' | 'loose' | 'cell' | 'ui' | 'edge' | 'corner' | 'bar' | 'resize' | 'box' | 'tear';
+type TargetKind = 'placed' | 'loose' | 'cell' | 'ui' | 'edge' | 'corner' | 'bar' | 'resize' | 'box' | 'tear' | 'pull';
 
 interface Target {
   kind: TargetKind;
@@ -355,6 +356,9 @@ interface HandState {
   tearFrom: Vector3;
   holdButton: Btn | null;
   held: Set<Btn>; // buttons down right now (controllers and mouse)
+  pulling: boolean; // holding the lamp's pull cord
+  pullFrom: number; // world height where the pull started
+  pullClicked: boolean; // this pull already clicked (let the cord back up to pull again)
   bArmed: boolean; // B/Y went down on a target: deletes on release unless it was used to select
   selectSweep: 'add' | 'remove' | null; // B/Y + trigger held: blocks swept over join (or leave) the selection
   fromSelection: boolean;
@@ -470,6 +474,10 @@ export class StackerSystem extends createSystem({}) {
   // around each other, and scales with the distance between them, like a map.
   private twoHand: { a: HandState; b: HandState; mid0: Vector3; pos0: Vector3; quat0: Quaternion; scale0: number; dist0: number; yaw0: number; step: number } | null = null;
   private twoHandLine!: Line;
+  // The pull-cord lamp: dimLevel indexes DIM_LEVELS; dimNow eases toward it and scales the lights.
+  private lamp!: PullLamp;
+  private dimLevel = 0;
+  private dimNow = 1;
 
   // Panels
   private panels: Panel[] = [];
@@ -638,6 +646,7 @@ export class StackerSystem extends createSystem({}) {
         env?: string;
         finish?: number;
         instructions?: Instructions;
+        dim?: number;
       } | null;
       // Looks saved before the lighting rework (v2) don't carry over; keep only the guide mode.
       const v = stored?.version === LOOK_VERSION ? stored : { instructions: stored?.instructions };
@@ -647,6 +656,8 @@ export class StackerSystem extends createSystem({}) {
       this.envId = v?.env ?? STYLES[this.style].env;
       this.finish = v?.finish ?? 0;
       this.instructions = v?.instructions ?? 'ghosts';
+      this.dimLevel = Math.max(0, Math.min(DIM_LEVELS.length - 1, stored?.dim ?? 0));
+      this.dimNow = DIM_LEVELS[this.dimLevel];
       this.backdrop = makeBackdrop();
       this.world.createTransformEntity(this.backdrop, { persistent: true });
       this.buildConnTables();
@@ -670,6 +681,9 @@ export class StackerSystem extends createSystem({}) {
       this.stable = this.snapshot();
       this.edited = false;
       this.buildRack();
+      this.lamp = new PullLamp();
+      this.lamp.setGlow(this.dimNow);
+      this.track(this.world.createTransformEntity(this.lamp.group));
       this.applyVisuals();
       this.ready = true;
       if (this.desktop.enabled) this.frameCamera();
@@ -688,7 +702,7 @@ export class StackerSystem extends createSystem({}) {
     this.updateDesktop();
     // Keep our reflection environment in place (IWSDK's own IBL may reassert itself).
     if (this.envTex && this.scene.environment !== this.envTex) this.scene.environment = this.envTex;
-    if (this.scene.environmentIntensity !== this.visual.envStrength) this.scene.environmentIntensity = this.visual.envStrength;
+    if (this.scene.environmentIntensity !== this.visual.envStrength * this.dimNow) this.scene.environmentIntensity = this.visual.envStrength * this.dimNow;
     this.ghostLineMat.opacity = 0.55 + 0.4 * Math.sin(this.time * 5);
     this.tickStats(delta);
 
@@ -702,6 +716,7 @@ export class StackerSystem extends createSystem({}) {
       trash ||= !!h.pieces && h.overTrash;
     }
     this.tickTwoHand(delta);
+    this.tickLamp(delta);
     // The library turns red while a held block is over it: letting go removes it.
     (this.library.bg.material as MeshBasicMaterial).color.setHex(trash ? 0x5c1f27 : PANEL_BG);
     let hot = false;
@@ -743,6 +758,7 @@ export class StackerSystem extends createSystem({}) {
           env: this.envId,
           finish: this.finish,
           instructions: this.instructions,
+          dim: this.dimLevel,
         });
       }
       if (!this.busy()) this.dirty = false;
@@ -907,18 +923,18 @@ export class StackerSystem extends createSystem({}) {
     const st = STYLES[this.style];
     this.renderer.toneMapping = TONES[this.tone][1];
     this.renderer.toneMappingExposure = v.exposure;
-    this.keyLight.intensity = v.key;
+    this.keyLight.intensity = v.key * this.dimNow;
     this.keyLight.color.set(st.key.color).lerp(new Color(v.warmth >= 0 ? 0xffc88a : 0xbcd4ff), Math.abs(v.warmth));
     this.hemi.color.set(st.fill.sky);
     this.hemi.groundColor.set(st.fill.ground);
-    this.hemi.intensity = v.fill;
+    this.hemi.intensity = v.fill * this.dimNow;
     const shadows = v.shadow > 0;
     this.keyLight.castShadow = shadows;
     this.renderer.shadowMap.enabled = shadows;
     this.keyLight.shadow.intensity = v.shadow;
     this.scene.environmentRotation.set(0, (v.envTurn * Math.PI) / 180, 0);
     // three ignores material.envMapIntensity for scene.environment; this is the one dial.
-    this.scene.environmentIntensity = v.envStrength;
+    this.scene.environmentIntensity = v.envStrength * this.dimNow;
     paintBackdrop(this.backdrop, st.backdrop[0], st.backdrop[1]);
     // No passthrough on a desktop: the backdrop stands in for the room.
     const backdrop = this.desktop.enabled && !this.renderer.xr.isPresenting ? 1 : v.backdrop;
@@ -1084,6 +1100,10 @@ export class StackerSystem extends createSystem({}) {
     }
     if (this.shelf) this.placeShelf();
     this.placeRack();
+    // The lamp hangs up and to the right, its bead a little above head height.
+    const xc = ((x0 + x1) / 2) * P;
+    if (this.lamp && this.desktop.enabled && !this.renderer.xr.isPresenting) place(this.lamp.group, xc + 0.3, 0.5, z0 * P - 0.15, 0, 0);
+    else if (this.lamp) place(this.lamp.group, xc + 0.24, 0.95, z1 * P + 0.18, 0, 0);
     this.aimKeyLight();
   }
 
@@ -2517,6 +2537,9 @@ export class StackerSystem extends createSystem({}) {
       tearFrom: new Vector3(),
       holdButton: null,
       held: new Set(),
+      pulling: false,
+      pullFrom: 0,
+      pullClicked: false,
       bArmed: false,
       selectSweep: null,
       fromSelection: false,
@@ -2800,6 +2823,11 @@ export class StackerSystem extends createSystem({}) {
     } else if (h.tear) {
       if (released) this.releaseTear(h);
       else this.pullTear(h);
+    } else if (h.pulling) {
+      if (released) {
+        h.pulling = false;
+        h.holdButton = null;
+      } else this.pullCord(h);
     } else if (h.frame) {
       if (released) this.releaseFrame(h);
       else this.holdFrame(h, delta);
@@ -2922,6 +2950,10 @@ export class StackerSystem extends createSystem({}) {
       const sc = this.probeObject(h, obj, 0.011, 0.011, 0.011, far);
       if (sc < limit) best = this.consider(best, { kind: 'corner', obj, corner, score: sc + yieldTo });
     });
+    if (this.lamp) {
+      const sc = this.probeObject(h, this.lamp.bead, 0.014, 0.014, 0.014, far);
+      if (sc < limit) best = this.consider(best, { kind: 'pull', obj: this.lamp.bead, score: sc });
+    }
     if (this.shelfBar) {
       const sc = this.probeObject(h, this.shelfBar, 0.05, 0.011, 0.011, far);
       if (sc < limit) best = this.consider(best, { kind: 'bar', frame: 'shelf', obj: this.shelfBar, score: sc });
@@ -3185,6 +3217,14 @@ export class StackerSystem extends createSystem({}) {
         if (other) this.startTwoHand(other, h);
         return;
       }
+      case 'pull':
+        h.pulling = true;
+        h.pullClicked = false;
+        h.holdButton = btn;
+        h.anchorDist = h.mode !== 'hand' && h.targetFar ? t.score : -1;
+        h.pullFrom = this.grabPoint(h).y;
+        this.tick(0.2);
+        return;
       case 'resize': {
         const panel = this.panels.find((p) => p.id === t.frame)!;
         h.frame = t.frame!;
@@ -3764,6 +3804,32 @@ export class StackerSystem extends createSystem({}) {
     h.holdButton = null;
   }
 
+  /** Pulling the lamp's cord: it stretches down with the hand; past PULL_CLICK it clicks the lights a level. */
+  private pullCord(h: HandState): void {
+    const d = Math.min(PULL_MAX, Math.max(0, h.pullFrom - this.grabPoint(h).y));
+    this.lamp.setPull(d);
+    if (!h.pullClicked && d > PULL_CLICK) {
+      h.pullClicked = true;
+      this.dimLevel = (this.dimLevel + 1) % DIM_LEVELS.length;
+      this.visualDirty = true;
+      this.click();
+    } else if (h.pullClicked && d < PULL_CLICK * 0.4) h.pullClicked = false; // back up: ready for another pull
+  }
+
+  /** The cord springs back once let go; the lights ease to the chosen level. */
+  private tickLamp(delta: number): void {
+    if (!this.lamp) return;
+    if (!this.hands.some((h) => h.pulling) && this.lamp.pull > 0) this.lamp.setPull(this.lamp.pull < 1e-4 ? 0 : this.lamp.pull * Math.exp(-delta * 18));
+    const target = DIM_LEVELS[this.dimLevel];
+    if (this.dimNow === target) return;
+    this.dimNow = Math.abs(target - this.dimNow) < 0.005 ? target : this.dimNow + (target - this.dimNow) * (1 - Math.exp(-delta * 8));
+    this.keyLight.intensity = this.visual.key * this.dimNow;
+    this.hemi.intensity = this.visual.fill * this.dimNow;
+    this.scene.environmentIntensity = this.visual.envStrength * this.dimNow;
+    this.lamp.setGlow(this.dimNow);
+    this.shadowDirty = true;
+  }
+
   private startTwoHand(a: HandState, b: HandState): void {
     const r = this.root.object3D!;
     const pa = this.grabPoint(a).clone();
@@ -3877,7 +3943,7 @@ export class StackerSystem extends createSystem({}) {
     const t = h.target;
     // Pinch ring: sits between thumb and index, shrinks as they close, fills blue on pinch.
     const ring = h.pinchRing;
-    const busy = !!(h.pieces || h.frame || h.slider || h.box || h.tear || h.swing);
+    const busy = !!(h.pieces || h.frame || h.slider || h.box || h.tear || h.swing || h.pulling);
     ring.visible = h.mode === 'hand' && !busy && h.pinchGap < 0.07;
     if (ring.visible) {
       ring.position.copy(h.point);

@@ -15,6 +15,7 @@ Stacker does its own input handling on top of IWSDK's raw input: controller pose
 | Turn held block 90° | Thumbstick left / right (about the platform's up) | Rotate your wrist |
 | Tip held block 90° | Thumbstick up / down (about the platform axis nearest your controller's side) | Rotate your wrist |
 | Undo / redo | ↶ Undo / ↷ on the library's tool row | Same |
+| Dim the lights | Reach up to the bulb above you and pull its cord down (grab the bead) | Pinch the bead and pull |
 | Move platform / tilt it | Grab a white edge bar | Pinch an edge bar |
 | Turn / scale platform | Hold an edge bar, grab a second edge (or the plate) with the other hand: turn your hands around each other, spread or close them | Same, with two pinches |
 | Resize platform | Grab a yellow corner | Pinch a yellow corner |
@@ -138,6 +139,12 @@ Handles are small and translucent (55%) until a hand points at one. Platform edg
 - **Library** — bar to move; yellow corner to resize (top-left stays fixed, 0.26–0.9 m wide, 0.3–0.9 m tall). Layout reflows: tabs wrap, the grid gains/loses columns and rows, colors wrap.
 - **Settings** — bar to move. See [06](06-rendering-and-performance.md).
 - **Kit shelf / manual** — bars to move. See [05](05-kits.md).
+
+## Lamp
+
+A light bulb hangs up and to your right (`lamp.ts`, placed with the panels; on the desktop it's above the plate). Grab the wooden bead on its cord, near, by ray or with the mouse, and pull down: the cord stretches with your hand, and past 5 cm it clicks (sound and haptics) and steps the room's lights to the next level, **100% → 60% → 30% →** back to 100%. Let the cord back up a little and you can pull again without letting go. Letting go springs it back.
+
+The level scales the key light, the fill and the environment reflections (on top of the look preset and sliders) and eases over a moment; the bulb's own glow follows it. It's saved with the look settings.
 
 ## Library panel
 
