@@ -15,6 +15,7 @@ Stacker does its own input handling on top of IWSDK's raw input: controller pose
 | Tip held block 90° | Thumbstick up / down | Rotate your wrist |
 | Undo / redo | ↶ Undo / ↷ on the library's tool row | Same |
 | Move platform / tilt it | Grab a white edge bar | Pinch an edge bar |
+| Turn / scale platform | Hold an edge bar, grab a second edge (or the plate) with the other hand: turn your hands around each other, spread or close them | Same, with two pinches |
 | Resize platform | Grab a yellow corner | Pinch a yellow corner |
 | Move a panel or the kit shelf | Grab its white bar underneath | Pinch its bar |
 | Resize the library | Grab its yellow corner (bottom-right) | Pinch it |
@@ -129,6 +130,7 @@ In any tool, grabbing a selected block carries the whole selection, keeping its 
 Handles are small and translucent (55%) until a hand points at one. Platform edge and corner handles yield to blocks: a block within 1.2 cm (near) or 3 cm (by ray) wins the grab.
 
 - **Edge bars** attach the platform rigidly to your hand (6DoF), so you can move and tilt it. If released within 7° of level, it eases back to level.
+- **Two hands** (`tickTwoHand`): while one hand holds an edge bar, the other can grab another edge bar or anywhere on the plate. The platform then follows the hands' midpoint, turns about up as they turn around each other (it never tilts), and scales with the distance between them (0.75×–3×, a haptic tick every 0.25×). A white line joins the two grabs. Letting go with one hand settles the scale on the Size slider's 0.05 steps and the other hand carries on alone, without a jump. The plate surface is only a handle for the second hand, so a missed grab while building never moves the platform.
 - **Corner handles** move two edges in whole studs, 4–64 per side, never shrinking past what's built. The opposite corner stays put.
 - **Size slider** scales the platform (and loose blocks) around the plate center, 0.75×–3×. Handles counter-scale so they stay the same size in your hand.
 - **Library** — bar to move; yellow corner to resize (top-left stays fixed, 0.26–0.9 m wide, 0.3–0.9 m tall). Layout reflows: tabs wrap, the grid gains/loses columns and rows, colors wrap.

@@ -430,6 +430,10 @@ export class StackerSystem extends createSystem({}) {
   private buildMin = new Vector3(); // bounds of everything placed, platform-local
   private buildMax = new Vector3();
   private levelAnim: { from: Quaternion; to: Quaternion; t: number } | null = null;
+  // Both hands on the platform: it follows their midpoint, turns about up as they turn
+  // around each other, and scales with the distance between them, like a map.
+  private twoHand: { a: HandState; b: HandState; mid0: Vector3; pos0: Vector3; quat0: Quaternion; scale0: number; dist0: number; yaw0: number; step: number } | null = null;
+  private twoHandLine!: Line;
 
   // Panels
   private panels: Panel[] = [];
@@ -611,6 +615,13 @@ export class StackerSystem extends createSystem({}) {
       this.world.createTransformEntity(this.backdrop, { persistent: true });
       this.buildConnTables();
       this.hands = HANDS.map((hand) => this.createHand(hand));
+      const twoGeo = new BufferGeometry();
+      twoGeo.setAttribute('position', new BufferAttribute(new Float32Array(6), 3));
+      this.twoHandLine = new Line(twoGeo, new LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.6, depthTest: false }));
+      this.twoHandLine.frustumCulled = false;
+      this.twoHandLine.renderOrder = 21;
+      this.twoHandLine.visible = false;
+      this.world.createTransformEntity(this.twoHandLine, { persistent: true });
       this.buildPlatform();
       this.library = this.createPanel('library', 0.32, 0.52, true);
       this.settings = this.createPanel('settings', 0.46, 0.57, false);
@@ -654,6 +665,7 @@ export class StackerSystem extends createSystem({}) {
       this.updateHand(h, delta);
       trash ||= !!h.pieces && h.overTrash;
     }
+    this.tickTwoHand(delta);
     // The library turns red while a held block is over it: letting go removes it.
     (this.library.bg.material as MeshBasicMaterial).color.setHex(trash ? 0x5c1f27 : PANEL_BG);
     let hot = false;
@@ -944,12 +956,7 @@ export class StackerSystem extends createSystem({}) {
 
   private updatePlate(): void {
     const P = dims.pitch;
-    const s = this.scale;
     const { x0, x1, z0, z1 } = this.bounds;
-    const cx = ((x0 + x1) / 2) * P;
-    const cz = ((z0 + z1) / 2) * P;
-    this.slab.scale.set((x1 - x0) * P, PLATE_T / s, (z1 - z0) * P);
-    this.slab.position.set(cx, -PLATE_T / s / 2, cz);
     let k = 0;
     for (let i = x0; i < x1; i++) {
       for (let j = z0; j < z1; j++) {
@@ -959,6 +966,19 @@ export class StackerSystem extends createSystem({}) {
     }
     this.plateStuds.count = k;
     this.plateStuds.instanceMatrix.needsUpdate = true;
+    this.layoutPlateHandles();
+    this.dirty = this.shadowDirty = this.edited = true;
+  }
+
+  /** The slab's thickness and the edge/corner handles, which stay the same real size at any scale. */
+  private layoutPlateHandles(): void {
+    const P = dims.pitch;
+    const s = this.scale;
+    const { x0, x1, z0, z1 } = this.bounds;
+    const cx = ((x0 + x1) / 2) * P;
+    const cz = ((z0 + z1) / 2) * P;
+    this.slab.scale.set((x1 - x0) * P, PLATE_T / s, (z1 - z0) * P);
+    this.slab.position.set(cx, -PLATE_T / s / 2, cz);
     const out = HANDLE_OUT / s;
     const y = 0.004 / s;
     const alongX = this.q1.setFromAxisAngle(this.v1.set(0, 0, 1), Math.PI / 2);
@@ -977,7 +997,6 @@ export class StackerSystem extends createSystem({}) {
     this.corners[2].position.set(x0 * P - c, y, z1 * P + c);
     this.corners[3].position.set(x1 * P + c, y, z1 * P + c);
     for (const h of [...this.edges, ...this.corners]) h.scale.setScalar(1 / s);
-    this.dirty = this.shadowDirty = this.edited = true;
   }
 
   private plateCenter(out: Vector3): Vector3 {
@@ -2810,6 +2829,11 @@ export class StackerSystem extends createSystem({}) {
       const sc = this.probeObject(h, obj, 0.009, 0.04, 0.009, far);
       if (sc < limit) best = this.consider(best, { kind: 'edge', frame: 'platform', obj, score: sc + yieldTo });
     });
+    // With the other hand already holding the platform, anywhere on the plate is a second handle.
+    if (this.hands.some((o) => o !== h && o.frame === 'platform' && o.corner < 0)) {
+      const sc = this.probeObject(h, this.slab, 0.5, 0.5, 0.5, far);
+      if (sc < limit) best = this.consider(best, { kind: 'edge', frame: 'platform', obj: this.slab, score: sc + yieldTo });
+    }
     this.corners.forEach((obj, corner) => {
       const sc = this.probeObject(h, obj, 0.011, 0.011, 0.011, far);
       if (sc < limit) best = this.consider(best, { kind: 'corner', obj, corner, score: sc + yieldTo });
@@ -3073,6 +3097,8 @@ export class StackerSystem extends createSystem({}) {
         h.offsetPos.copy(obj.position).sub(this.grabPoint(h)).applyQuaternion(this.q1);
         this.levelAnim = null;
         this.tick(0.3);
+        const other = h.frame === 'platform' && this.hands.find((o) => o !== h && o.frame === 'platform' && o.corner < 0 && !o.resizing);
+        if (other) this.startTwoHand(other, h);
         return;
       }
       case 'resize': {
@@ -3535,6 +3561,7 @@ export class StackerSystem extends createSystem({}) {
       this.dragResize(h, h.resizing);
       return;
     }
+    if (this.twoHand && (this.twoHand.a === h || this.twoHand.b === h)) return; // tickTwoHand moves it
     const obj = this.frameObject(h.frame!);
     this.v1.copy(h.offsetPos).applyQuaternion(h.quat).add(this.grabPoint(h));
     this.q1.copy(h.quat).multiply(h.offsetQuat);
@@ -3565,6 +3592,13 @@ export class StackerSystem extends createSystem({}) {
   }
 
   private releaseFrame(h: HandState): void {
+    const two = this.twoHand;
+    if (two && (two.a === h || two.b === h)) {
+      this.endTwoHand(two.a === h ? two.b : two.a);
+      h.frame = null;
+      h.holdButton = null;
+      return;
+    }
     if (h.frame === 'platform' && h.corner < 0) {
       const q = this.root.object3D!.quaternion;
       const up = this.v1.set(0, 1, 0).applyQuaternion(q);
@@ -3576,6 +3610,82 @@ export class StackerSystem extends createSystem({}) {
     h.resizing = null;
     h.corner = -1;
     h.holdButton = null;
+  }
+
+  private startTwoHand(a: HandState, b: HandState): void {
+    const r = this.root.object3D!;
+    const pa = this.grabPoint(a).clone();
+    const pb = this.grabPoint(b).clone();
+    const d = pb.clone().sub(pa);
+    this.twoHand = {
+      a,
+      b,
+      mid0: pa.clone().add(pb).multiplyScalar(0.5),
+      pos0: r.position.clone(),
+      quat0: r.quaternion.clone(),
+      scale0: this.scale,
+      dist0: Math.max(0.05, d.length()),
+      yaw0: Math.atan2(d.x, d.z),
+      step: Math.round(this.scale * 4),
+    };
+    this.twoHandLine.visible = true;
+    this.pulse(a.hand, 0.4, 20);
+    this.pulse(b.hand, 0.4, 20);
+  }
+
+  /** Both hands on the platform: follow the midpoint, turn about up, scale with their spread. */
+  private tickTwoHand(delta: number): void {
+    const two = this.twoHand;
+    if (!two) return;
+    const r = this.root.object3D!;
+    const pa = this.v3.copy(this.grabPoint(two.a));
+    const pb = this.v4.copy(this.grabPoint(two.b));
+    const line = this.twoHandLine.geometry.getAttribute('position') as BufferAttribute;
+    line.setXYZ(0, pa.x, pa.y, pa.z);
+    line.setXYZ(1, pb.x, pb.y, pb.z);
+    line.needsUpdate = true;
+    const d = this.v1.copy(pb).sub(pa);
+    const def = SLIDERS[0];
+    const s = Math.min(def.max, Math.max(def.min, (two.scale0 * d.length()) / two.dist0));
+    const ratio = s / two.scale0;
+    const yaw = Math.atan2(d.x, d.z) - two.yaw0;
+    const turn = this.q1.setFromAxisAngle(this.up, yaw);
+    const mid = this.v2.copy(pa).add(pb).multiplyScalar(0.5);
+    const pos = this.v1.copy(two.pos0).sub(two.mid0).multiplyScalar(ratio).applyQuaternion(turn).add(mid);
+    const a = 1 - Math.exp(-delta * (two.a.mode === 'hand' || two.b.mode === 'hand' ? FOLLOW_HAND : FOLLOW_CTRL));
+    r.position.lerp(pos, a);
+    r.quaternion.slerp(this.q2.copy(turn).multiply(two.quat0), a);
+    const next = this.scale + (s - this.scale) * a;
+    if (Math.abs(next - this.scale) > 1e-5) {
+      r.scale.setScalar(next);
+      this.scale = next;
+      for (const l of this.loose) l.mesh.scale.setScalar(next);
+      this.layoutPlateHandles();
+    }
+    r.updateMatrixWorld(true);
+    this.aimKeyLight();
+    // A tick each quarter step of scale.
+    const step = Math.round(this.scale * 4);
+    if (step !== two.step) {
+      two.step = step;
+      this.pulse(two.a.hand, 0.15, 8);
+      this.pulse(two.b.hand, 0.15, 8);
+    }
+  }
+
+  /** One hand let go: the other carries on alone from where the platform is now. */
+  private endTwoHand(rest: HandState): void {
+    this.twoHand = null;
+    this.twoHandLine.visible = false;
+    const r = this.root.object3D!;
+    // Settle on the Size slider's steps (0.05).
+    const snapped = Math.round(this.scale * 20) / 20;
+    if (snapped !== this.scale) this.setScale(snapped);
+    else this.updatePlate();
+    this.redrawUi((u) => u.id === 'slider:size');
+    this.q1.copy(rest.quat).invert();
+    rest.offsetQuat.copy(this.q1).multiply(r.quaternion);
+    rest.offsetPos.copy(r.position).sub(this.grabPoint(rest)).applyQuaternion(this.q1);
   }
 
   private tickLevel(delta: number): void {
