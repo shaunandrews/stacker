@@ -327,6 +327,9 @@ interface HandState {
   tear: KitBox | null; // pulling this box's tear strip
   tearFrom: Vector3;
   holdButton: Btn | null;
+  held: Set<Btn>; // buttons down right now (controllers and mouse)
+  bArmed: boolean; // B/Y went down on a target: deletes on release unless it was used to select
+  selectSweep: 'add' | 'remove' | null; // B/Y + trigger held: blocks swept over join (or leave) the selection
   fromSelection: boolean;
   rotTarget: Quaternion; // controller: where the held block's rotation is easing to
   painting: boolean;
@@ -2472,6 +2475,9 @@ export class StackerSystem extends createSystem({}) {
       tear: null,
       tearFrom: new Vector3(),
       holdButton: null,
+      held: new Set(),
+      bArmed: false,
+      selectSweep: null,
       fromSelection: false,
       rotTarget: new Quaternion(),
       painting: false,
@@ -2522,6 +2528,7 @@ export class StackerSystem extends createSystem({}) {
       // and when it comes back, its pinch is re-read rather than treated as new.
       const keep = !!h.pieces && ((mode === 'none' && h.mode === 'hand') || (mode === 'hand' && h.mode === 'none'));
       if (h.holdButton && !keep) h.up.add(h.holdButton);
+      h.held.clear();
       h.recovering = keep && mode === 'hand';
       h.closing = 0;
       h.pinching = h.midPinching = false;
@@ -2610,6 +2617,7 @@ export class StackerSystem extends createSystem({}) {
     const d = this.desktop;
     if (h.mode !== 'mouse') {
       if (h.holdButton) h.up.add(h.holdButton);
+      h.held.clear();
       h.closing = 0;
       h.pinching = h.midPinching = false;
       h.mode = 'mouse';
@@ -2702,6 +2710,8 @@ export class StackerSystem extends createSystem({}) {
 
   private updateHand(h: HandState, delta: number): void {
     this.readInput(h);
+    for (const b of h.down) h.held.add(b);
+    for (const b of h.up) h.held.delete(b);
     for (const g of h.ghosts) g.visible = false;
     h.guide.visible = false;
     if (h.lit) {
@@ -2721,6 +2731,13 @@ export class StackerSystem extends createSystem({}) {
       }
     } else if (h.pieces) {
       h.lost = 0;
+      // Holding a duplicate on A/X: squeeze grip (or trigger) and it's held by that
+      // instead, so A can be let go and the thumb is free for the stick.
+      const takeOver = h.holdButton === 'a' && !released ? (h.down.has('squeeze') ? 'squeeze' : h.down.has('trigger') ? 'trigger' : null) : null;
+      if (takeOver) {
+        h.holdButton = takeOver;
+        this.pulse(h.hand, 0.3, 15);
+      }
       if (released) this.releasePieces(h);
       else if (h.down.has('b')) this.dropPieces(h);
       else this.holdPieces(h, delta);
@@ -2754,10 +2771,29 @@ export class StackerSystem extends createSystem({}) {
       }
       const grab = this.pressed(h, GRAB_BTNS);
       const dup = this.pressed(h, DUP_BTNS);
+      // Controllers: B/Y is a modifier. Held, trigger/grip selects (and sweeping selects
+      // more); tapped on its own, it deletes on release. A/X held + grip duplicates.
+      const pad = h.mode === 'controller';
+      const bHeld = pad && h.held.has('b');
+      if (h.selectSweep && !(bHeld && (h.held.has('trigger') || h.held.has('squeeze')))) h.selectSweep = null;
+      if (h.selectSweep && h.target?.kind === 'placed') this.sweepSelect(h.target.placed!, h.selectSweep);
+      if (pad && h.down.has('b')) {
+        h.bArmed = !!h.target;
+        h.selectSweep = null;
+      }
       if (h.target && !h.painting) {
-        if (grab) this.onGrab(h, grab);
+        if (grab && bHeld && h.target.kind === 'placed') {
+          h.bArmed = false;
+          h.selectSweep = this.selection.has(h.target.placed!) ? 'remove' : 'add';
+          this.sweepSelect(h.target.placed!, h.selectSweep);
+        } else if (grab && pad && h.held.has('a')) this.onDuplicate(h, grab);
+        else if (grab) this.onGrab(h, grab);
         else if (dup) this.onDuplicate(h, dup);
-        else if (h.down.has('b')) this.onDelete(h.target);
+        else if (!pad && h.down.has('b')) this.onDelete(h.target);
+      }
+      if (pad && h.up.has('b')) {
+        if (h.bArmed && h.target) this.onDelete(h.target);
+        h.bArmed = false;
       }
     }
     this.drawPointer(h);
@@ -3120,6 +3156,15 @@ export class StackerSystem extends createSystem({}) {
         this.tick(0.3);
         return;
     }
+  }
+
+  /** B/Y + trigger: add a block to the selection (or take it out), once per block per sweep. */
+  private sweepSelect(rec: Placed, mode: 'add' | 'remove'): void {
+    if (mode === 'add' ? this.selection.has(rec) : !this.selection.has(rec)) return;
+    if (mode === 'add') this.selection.add(rec);
+    else this.selection.delete(rec);
+    this.tick(0.2);
+    this.redrawUi((u) => u.id === 'deselect');
   }
 
   private frameObject(frame: FrameKind): Object3D {
@@ -3749,7 +3794,9 @@ export class StackerSystem extends createSystem({}) {
         h.outline.geometry = obj.geometry;
         h.outline.scale.multiplyScalar(t.kind === 'loose' || t.kind === 'cell' ? 1.08 : t.kind === 'box' ? 1.04 : 1.3);
       }
-      (h.outline.material as MeshBasicMaterial).color.set(this.tool === 'paint' ? this.lib.colors[this.color].hex : 0xffffff);
+      // B/Y held: the outline turns selection-cyan (trigger selects instead of grabbing).
+      const selecting = h.mode === 'controller' && h.held.has('b') && !h.pieces;
+      (h.outline.material as MeshBasicMaterial).color.set(selecting ? 0x22d3ee : this.tool === 'paint' ? this.lib.colors[this.color].hex : 0xffffff);
       h.outline.visible = true;
     }
     const showRay = h.mode !== 'none' && h.mode !== 'mouse' && !h.pieces && !h.frame && !h.box && (h.targetFar || !t || !!h.slider || !!h.tear || !!h.swing);

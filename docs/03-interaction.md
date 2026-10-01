@@ -9,8 +9,9 @@ Stacker does its own input handling on top of IWSDK's raw input: controller pose
 | Grab (near) | Grip or trigger near a block | Pinch (thumb + index) near a block |
 | Grab (far) | Point the laser, then grip/trigger | Point, then pinch |
 | Press a button / tab / swatch | Point + trigger (or grip) | Poke with index finger, or point + pinch |
-| Duplicate what you're pointing at | Hold A / X — carry — let go to place | Hold thumb + middle-finger pinch |
-| Delete | B / Y on a block (or while holding) | Drop it on the library panel (it turns red) |
+| Duplicate what you're pointing at | Hold A / X — carry — let go to place. Or hold A / X and squeeze grip: the copy is held by the grip, so you can let go of A and turn it with the stick | Hold thumb + middle-finger pinch |
+| Select | Hold B / Y and pull the trigger on blocks (keep the trigger held and sweep to select more; on a selected block it deselects). The outline turns cyan while B / Y is held | Select tool |
+| Delete | Tap B / Y on a block (deletes on release), or press it while holding | Drop it on the library panel (it turns red) |
 | Turn held block 90° | Thumbstick left / right | Rotate your wrist |
 | Tip held block 90° | Thumbstick up / down | Rotate your wrist |
 | Undo / redo | ↶ Undo / ↷ on the library's tool row | Same |
@@ -57,7 +58,8 @@ Each hand has a `HandState`:
 - **Letting go.** Once the pinch opens past 22 mm, the held block stops following the fingers, and release commits the landing that was on show (per-hand snap cache) rather than recomputing it.
 - **Tracking loss.** A hand dropping out of tracking mid-hold keeps its pieces still for 0.3 s; if it's back and still pinching, the hold continues. Otherwise the pieces are parked where they are — never snapped somewhere you didn't choose.
 - **Poke.** A press needs the fingertip to arrive from in front of the panel (armed above 6 mm) and reach the surface (4 mm; buttons sit at 1 mm). Sliding in from the side or from behind doesn't fire. Presses by hand or mouse play a soft tick (no haptics there).
-- `holdButton`: whichever button started a hold; releasing *that* button ends it (so hold-A-to-duplicate releases on A)
+- `holdButton`: whichever button started a hold; releasing *that* button ends it (so hold-A-to-duplicate releases on A). Squeezing grip (or trigger) while holding a duplicate on A hands the hold to that button
+- `held`: buttons down right now, for modifiers: A/X held + grip duplicates; B/Y held turns trigger/grip into select (`selectSweep` adds or removes blocks swept over). B/Y only deletes when it's released without having selected anything (`bArmed`)
 
 ## Targeting
 
@@ -117,7 +119,7 @@ Parts listed in `tools/hinges.json` swing once placed: 1×2 hinges, swivel plate
 
 | Tool | Trigger/pinch on a block | Grip on a block | A / X | B / Y |
 |---|---|---|---|---|
-| **Build** | grab | grab | duplicate & carry | delete |
+| **Build** | grab | grab | duplicate & carry (hold A + grip: carry on the grip) | tap: delete · hold + trigger: select |
 | **Select** | toggle selection (cyan outline) | grab the whole selection | duplicate the selection | delete the selection |
 | **Paint** | recolor; keep holding and sweep to paint more | recolor / sweep | duplicate | delete |
 
