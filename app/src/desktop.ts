@@ -9,9 +9,10 @@ import { PerspectiveCamera, Vector2, Vector3 } from '@iwsdk/core';
 //   wheel                zoom         F: frame the platform
 //   Q / E, ← / →         turn the held block      ↑ / ↓: tip it
 //   Delete / Backspace   delete       1 2 3: Build / Select / Paint
+//   Space                take the photo (holding the box camera)
 //   ⌘/Ctrl + Z           undo (Shift: redo)
 
-export type DesktopAction = 'spinL' | 'spinR' | 'tipU' | 'tipD' | 'delete' | 'undo' | 'redo' | 'frame' | 'tool1' | 'tool2' | 'tool3';
+export type DesktopAction = 'spinL' | 'spinR' | 'tipU' | 'tipD' | 'delete' | 'undo' | 'redo' | 'frame' | 'tool1' | 'tool2' | 'tool3' | 'shoot';
 
 const KEYS: Record<string, DesktopAction> = {
   q: 'spinL',
@@ -26,6 +27,7 @@ const KEYS: Record<string, DesktopAction> = {
   '1': 'tool1',
   '2': 'tool2',
   '3': 'tool3',
+  ' ': 'shoot',
 };
 
 export class DesktopControls {

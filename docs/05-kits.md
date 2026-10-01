@@ -71,6 +71,16 @@ Every kit has a product box on a **rack** to the right of the platform (desktop 
 
 The Library's Kits tab still starts kits directly.
 
+### Boxing your own build (the box camera)
+
+A small camera sits on the rack's roof (`snap-camera.ts`). Grab it and its back screen is a viewfinder: your build, rendered the way box art is (`ArtRenderer.renderView` from the camera's pose, only the placed blocks, on the box's color), a few times a second, in a GL context of its own that's freed when you put the camera down.
+
+- **Shutter:** A/X, or the trigger when you hold it by the grip; with hands, poke the red button with your other index finger; on the desktop, Space
+- **What it makes:** a box of your own (`shootBox`): your shot on the front (`mine` boxes draw it as framed, without the floor shadow), the back rendered as usual, the build's most common color, "My build n". It pops out of the camera and flies to the rack's top tier, **Your builds** (newest first; ones that don't fit stay off the rack)
+- **Inside:** your build as kit steps (`buildSteps`): every piece by its transform, bottom up, 3–5 a step. Tearing the strip opens it like any kit, so you (or anyone on that device) can rebuild it with ghosts and the manual
+- **Stored** on the device in `localStorage` under `stacker.boxes` (photo as WebP, steps as kit blocks; finishes aren't kept)
+- **Delete:** carry one of your boxes over the library (it turns red) and let go
+
 ## Running a kit
 
 Starting a kit (a box, or Library → Kits → a kit):

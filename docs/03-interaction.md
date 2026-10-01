@@ -15,6 +15,7 @@ Stacker does its own input handling on top of IWSDK's raw input: controller pose
 | Turn held block 90° | Thumbstick left / right (about the platform's up) | Rotate your wrist |
 | Tip held block 90° | Thumbstick up / down (about the platform axis nearest your controller's side) | Rotate your wrist |
 | Undo / redo | ↶ Undo / ↷ on the library's tool row | Same |
+| Box your build | Grab the camera on top of the kit rack, aim, A/X (or trigger) | Hold it, poke its red button with the other hand |
 | Dim the lights | Reach up to the bulb above you and pull its cord down (grab the bead) | Pinch the bead and pull |
 | Move platform / tilt it | Grab a white edge bar | Pinch an edge bar |
 | Turn / scale platform | Hold an edge bar, grab a second edge (or the plate) with the other hand: turn your hands around each other, spread or close them | Same, with two pinches |

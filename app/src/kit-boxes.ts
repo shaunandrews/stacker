@@ -33,6 +33,7 @@ export interface KitInfo {
   title: string;
   pieces: number;
   color: string; // box color
+  mine?: boolean; // boxed from your own build (front is your photo)
 }
 
 export interface ArtPiece {
@@ -174,6 +175,33 @@ export class ArtRenderer {
     const key = new DirectionalLight(0xffffff, 2.4);
     key.position.set(1.5, 3, 2.2);
     this.scene.add(key, new HemisphereLight(0xffffff, 0x404040, 0.7));
+  }
+
+  /**
+   * The model seen from a given camera (model space, meters) into `out`, square, on a
+   * transparent background: the box camera's viewfinder and photo.
+   */
+  renderView(group: Object3D, pos: Vector3, quat: Quaternion, fov: number, out: HTMLCanvasElement): HTMLCanvasElement {
+    this.scene.add(group);
+    group.updateMatrixWorld(true);
+    const cam = this.camera;
+    cam.fov = fov;
+    cam.aspect = 1;
+    cam.near = 0.005;
+    cam.far = 20;
+    cam.clearViewOffset();
+    cam.position.copy(pos);
+    cam.quaternion.copy(quat);
+    cam.updateProjectionMatrix();
+    cam.updateMatrixWorld();
+    this.renderer.setSize(out.width, out.height, false);
+    this.renderer.render(this.scene, cam);
+    const ctx = out.getContext('2d')!;
+    ctx.clearRect(0, 0, out.width, out.height);
+    ctx.drawImage(this.renderer.domElement, 0, 0);
+    this.renderer.setSize(ART, ART, false);
+    this.scene.remove(group);
+    return out;
   }
 
   /** The model from the front-right (front) or back-left (back), on a transparent canvas. */
@@ -323,7 +351,12 @@ function background(ctx: CanvasRenderingContext2D, W: number, H: number, color: 
   ctx.fillRect(0, 0, W, H);
 }
 
-function drawArt(ctx: CanvasRenderingContext2D, art: HTMLCanvasElement | null, cx: number, cy: number, size: number): void {
+function drawArt(ctx: CanvasRenderingContext2D, art: HTMLCanvasElement | null, cx: number, cy: number, size: number, photo = false): void {
+  if (photo) {
+    // Your own framing: no floor shadow, the shot as taken.
+    if (art) ctx.drawImage(art, cx - size / 2, cy - size / 2, size, size);
+    return;
+  }
   // Soft floor shadow, then the model.
   ctx.save();
   ctx.fillStyle = 'rgba(0,0,0,0.28)';
@@ -348,8 +381,8 @@ function drawFront(canvas: HTMLCanvasElement, k: KitInfo, art: HTMLCanvasElement
   ctx.font = `600 ${H * 0.045}px ${FONT}`;
   ctx.textAlign = 'right';
   ctx.textBaseline = 'middle';
-  ctx.fillText(`No. ${k.id.replace(/-1$/, '')}`, W * 0.965, H * 0.067);
-  drawArt(ctx, art, W * 0.58, H * 0.54, H * 0.84);
+  ctx.fillText(k.mine ? 'Your build' : `No. ${k.id.replace(/-1$/, '')}`, W * 0.965, H * 0.067);
+  drawArt(ctx, art, W * 0.58, H * 0.54, H * 0.84, !!k.mine);
   // Title
   ctx.textAlign = 'left';
   ctx.textBaseline = 'alphabetic';

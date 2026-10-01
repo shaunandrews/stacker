@@ -31,6 +31,7 @@ import {
   Object3D,
   PCFShadowMap,
   PMREMGenerator,
+  Group,
   PlaneGeometry,
   RedFormat,
   RingGeometry,
@@ -51,6 +52,7 @@ import { KITS, kitPiece } from './kits.js';
 import type { KitBlock } from './kits.js';
 import { MANUAL_ZOOM, ManualPainter } from './manual.js';
 import { DIM_LEVELS, PULL_CLICK, PULL_MAX, PullLamp } from './lamp.js';
+import { SnapCamera, VIEW_FOV } from './snap-camera.js';
 import { HDRLoader } from 'three/examples/jsm/loaders/HDRLoader.js';
 import { CONTACT, envId, ENVS, finishIndex, FINISHES, makeBackdrop, makeEnvScene, makeFinish, OCCLUSION, paintBackdrop, patchBlockShader, STYLES } from './look.js';
 import { progress } from './splash.js';
@@ -250,6 +252,17 @@ interface Loose {
   finish: number;
 }
 
+/** A box of your own build, as stored on this device (`stacker.boxes`). */
+interface StoredBox {
+  id: string;
+  title: string;
+  color: string;
+  pieces: number;
+  steps: KitBlock[][];
+  photo: string; // data URL of the box-front photo
+  at: string;
+}
+
 interface Piece {
   block: Loose;
   offPos: Vector3; // pose relative to the anchor (pieces[0])
@@ -302,7 +315,7 @@ interface UiItem {
   slot?: [InstancedMesh, number]; // swatches: their instance
 }
 
-type TargetKind = 'placed' | 'loose' | 'cell' | 'ui' | 'edge' | 'corner' | 'bar' | 'resize' | 'box' | 'tear' | 'pull';
+type TargetKind = 'placed' | 'loose' | 'cell' | 'ui' | 'edge' | 'corner' | 'bar' | 'resize' | 'box' | 'tear' | 'pull' | 'camera';
 
 interface Target {
   kind: TargetKind;
@@ -356,6 +369,7 @@ interface HandState {
   tearFrom: Vector3;
   holdButton: Btn | null;
   held: Set<Btn>; // buttons down right now (controllers and mouse)
+  camera: boolean; // holding the box camera
   pulling: boolean; // holding the lamp's pull cord
   pullFrom: number; // world height where the pull started
   pullClicked: boolean; // this pull already clicked (let the cord back up to pull again)
@@ -509,6 +523,16 @@ export class StackerSystem extends createSystem({}) {
   private rack: Entity | null = null;
   private rackBar: Object3D | null = null;
   private boxes: KitBox[] = [];
+  // Boxes of your own builds (top tier of the rack), newest first; stored on this device.
+  private myBoxes: StoredBox[] = [];
+  private boxEntities = new Map<KitBox, Entity>();
+  private rackHint: Mesh | null = null;
+  private shutterArmed = false;
+  private snapCam: SnapCamera | null = null;
+  private viewArt: ArtRenderer | null = null; // the camera's viewfinder renderer, while it's held
+  private viewGroup: Group | null = null;
+  private viewGen = -1;
+  private viewFrame = 0;
   private kitData = new Map<string, Promise<KitBlock[][]>>();
 
   // Tools & state
@@ -555,6 +579,8 @@ export class StackerSystem extends createSystem({}) {
   private v6!: Vector3;
   private q1!: Quaternion;
   private q2!: Quaternion;
+  private q3 = new Quaternion();
+  private q4 = new Quaternion();
   private m1!: Matrix4;
   private m2!: Matrix4;
   private axA = [new Vector3(), new Vector3(), new Vector3()];
@@ -713,10 +739,11 @@ export class StackerSystem extends createSystem({}) {
     let trash = false;
     for (const h of this.hands) {
       this.updateHand(h, delta);
-      trash ||= !!h.pieces && h.overTrash;
+      trash ||= (!!h.pieces && h.overTrash) || (!!h.box?.kit.mine && this.overLibrary(h.box.mesh.position));
     }
     this.tickTwoHand(delta);
     this.tickLamp(delta);
+    this.tickCamera(delta);
     // The library turns red while a held block is over it: letting go removes it.
     (this.library.bg.material as MeshBasicMaterial).color.setHex(trash ? 0x5c1f27 : PANEL_BG);
     let hot = false;
@@ -2537,6 +2564,7 @@ export class StackerSystem extends createSystem({}) {
       tearFrom: new Vector3(),
       holdButton: null,
       held: new Set(),
+      camera: false,
       pulling: false,
       pullFrom: 0,
       pullClicked: false,
@@ -2823,6 +2851,9 @@ export class StackerSystem extends createSystem({}) {
     } else if (h.tear) {
       if (released) this.releaseTear(h);
       else this.pullTear(h);
+    } else if (h.camera) {
+      if (released) this.releaseCamera(h);
+      else this.carryCamera(h, delta);
     } else if (h.pulling) {
       if (released) {
         h.pulling = false;
@@ -2950,6 +2981,10 @@ export class StackerSystem extends createSystem({}) {
       const sc = this.probeObject(h, obj, 0.011, 0.011, 0.011, far);
       if (sc < limit) best = this.consider(best, { kind: 'corner', obj, corner, score: sc + yieldTo });
     });
+    if (this.snapCam && this.rackShown() && this.snapCam.state !== 'held') {
+      const sc = this.probeObject(h, this.snapCam.body, 0.045, 0.032, 0.025, far);
+      if (sc < limit) best = this.consider(best, { kind: 'camera', obj: this.snapCam.body, score: sc });
+    }
     if (this.lamp) {
       const sc = this.probeObject(h, this.lamp.bead, 0.014, 0.014, 0.014, far);
       if (sc < limit) best = this.consider(best, { kind: 'pull', obj: this.lamp.bead, score: sc });
@@ -3217,6 +3252,9 @@ export class StackerSystem extends createSystem({}) {
         if (other) this.startTwoHand(other, h);
         return;
       }
+      case 'camera':
+        this.holdCamera(h, btn);
+        return;
       case 'pull':
         h.pulling = true;
         h.pullClicked = false;
@@ -3943,7 +3981,7 @@ export class StackerSystem extends createSystem({}) {
     const t = h.target;
     // Pinch ring: sits between thumb and index, shrinks as they close, fills blue on pinch.
     const ring = h.pinchRing;
-    const busy = !!(h.pieces || h.frame || h.slider || h.box || h.tear || h.swing || h.pulling);
+    const busy = !!(h.pieces || h.frame || h.slider || h.box || h.tear || h.swing || h.pulling || h.camera);
     ring.visible = h.mode === 'hand' && !busy && h.pinchGap < 0.07;
     if (ring.visible) {
       ring.position.copy(h.point);
@@ -4404,19 +4442,34 @@ export class StackerSystem extends createSystem({}) {
     const shelf = new Mesh(new RoundedBoxGeometry(RACK_W, 0.008, RACK_D, 2, 0.003), mat);
     shelf.position.y = RACK_TIER;
     shelf.receiveShadow = true;
-    const back = new Mesh(new BoxGeometry(RACK_W, RACK_TIER * 2 + 0.02, 0.006), mat);
-    back.position.set(0, RACK_TIER - 0.005, -RACK_D / 2 + 0.003);
+    // A third tier on top holds boxes of your own builds; the camera sits on the roof.
+    const mine = new Mesh(new RoundedBoxGeometry(RACK_W, 0.008, RACK_D, 2, 0.003), mat);
+    mine.position.y = RACK_TIER * 2;
+    mine.receiveShadow = true;
+    const roof = new Mesh(new RoundedBoxGeometry(RACK_W, 0.008, RACK_D, 2, 0.003), mat);
+    roof.position.y = RACK_TIER * 3;
+    roof.receiveShadow = true;
+    parts.push(mine, roof);
+    const back = new Mesh(new BoxGeometry(RACK_W, RACK_TIER * 3 + 0.01, 0.006), mat);
+    back.position.set(0, (RACK_TIER * 3) / 2, -RACK_D / 2 + 0.003);
     for (const x of [-1, 1]) {
-      const side = new Mesh(new BoxGeometry(0.008, RACK_TIER * 2 + 0.02, RACK_D), mat);
-      side.position.set((x * (RACK_W - 0.008)) / 2, RACK_TIER - 0.005, 0);
+      const side = new Mesh(new BoxGeometry(0.008, RACK_TIER * 3 + 0.01, RACK_D), mat);
+      side.position.set((x * (RACK_W - 0.008)) / 2, (RACK_TIER * 3) / 2, 0);
       parts.push(side);
     }
+    // Label on the top tier's edge, and a hint on its back wall while it's empty.
+    const label = new Mesh(new PlaneGeometry(0.16, 0.016), new MeshBasicMaterial({ map: this.textTexture('YOUR BUILDS', 512, 52, '#e2e8f0', 'rgba(0,0,0,0)', 34), transparent: true, toneMapped: false }));
+    label.position.set(-RACK_W / 2 + 0.1, RACK_TIER * 3 - 0.018, -RACK_D / 2 + 0.007);
+    this.rackHint = new Mesh(new PlaneGeometry(0.44, 0.05), new MeshBasicMaterial({ map: this.textTexture('Grab the camera on top and photograph your build to box it', 1400, 160, '#98a2b5', 'rgba(0,0,0,0)', 46), transparent: true, toneMapped: false }));
+    this.rackHint.position.set(0, RACK_TIER * 2.5, -RACK_D / 2 + 0.007);
+    parts.push(label, this.rackHint);
     const bar = new Mesh(new CapsuleGeometry(0.005, 0.09, 4, 10).rotateZ(Math.PI / 2), new MeshStandardMaterial({ color: 0xe2e8f0, roughness: 0.4 }));
     bar.position.set(0, -0.01, RACK_D / 2 + 0.014);
     this.rackBar = bar;
     for (const m of [shelf, back, ...parts, bar]) this.child(this.rack, m);
-    // Boxes: first half on the bottom shelf, the rest on top, centered in each row.
+    // Boxes: first half on the bottom shelf, the rest on the middle one, centered in each row.
     this.boxes = KITS.map((k) => new KitBox(k));
+    for (const b of this.boxes) this.boxEntities.set(b, this.world.createTransformEntity(b.mesh, { persistent: true }));
     const perRow = Math.ceil(this.boxes.length / 2);
     for (let row = 0; row < 2; row++) {
       const inRow = this.boxes.slice(row * perRow, (row + 1) * perRow);
@@ -4426,11 +4479,62 @@ export class StackerSystem extends createSystem({}) {
       for (const b of inRow) {
         b.slotPos.set(x + b.w / 2, row * RACK_TIER + 0.005 + b.h / 2 + (row ? 0.004 : 0), 0.004);
         x += b.w + gap;
-        this.world.createTransformEntity(b.mesh, { persistent: true });
       }
     }
+    // Your boxes, from this device.
+    this.myBoxes = ((this.readStore('stacker.boxes') as StoredBox[] | null) ?? []).filter((b) => b && b.id && Array.isArray(b.steps));
+    for (const stored of this.myBoxes) this.addMyBox(stored);
+    this.layoutMyBoxes();
+    // The camera, on the roof at the right.
+    const cam = new SnapCamera();
+    cam.homePos.set(RACK_W / 2 - 0.07, RACK_TIER * 3 + 0.004 + 0.025, 0);
+    this.snapCam = cam;
+    this.world.createTransformEntity(cam.group, { persistent: true });
     this.placeRack();
     void this.paintBoxes();
+  }
+
+  /** A text label as a texture (left-aligned, vertically centered). */
+  private textTexture(text: string, w: number, h: number, color: string, bg: string, size: number): CanvasTexture {
+    const c = document.createElement('canvas');
+    c.width = w;
+    c.height = h;
+    const ctx = c.getContext('2d')!;
+    ctx.fillStyle = bg;
+    ctx.fillRect(0, 0, w, h);
+    ctx.fillStyle = color;
+    ctx.font = `700 ${size}px system-ui, -apple-system, sans-serif`;
+    ctx.textBaseline = 'middle';
+    ctx.textAlign = 'center';
+    ctx.fillText(text, w / 2, h / 2 + 2, w - 8);
+    const tex = new CanvasTexture(c);
+    tex.colorSpace = SRGBColorSpace;
+    return tex;
+  }
+
+  /** A box for one of your builds (not yet on the rack: see layoutMyBoxes). */
+  private addMyBox(stored: StoredBox): KitBox {
+    const box = new KitBox({ id: stored.id, title: stored.title, pieces: stored.pieces, color: stored.color, mine: true });
+    this.kitData.set(stored.id, Promise.resolve(stored.steps));
+    this.boxes.push(box);
+    this.boxEntities.set(box, this.world.createTransformEntity(box.mesh, { persistent: true }));
+    return box;
+  }
+
+  /** Your boxes along the top tier, newest first; ones that don't fit stay off the rack. */
+  private layoutMyBoxes(): void {
+    const order = this.myBoxes.map((m) => this.boxes.find((b) => b.kit.id === m.id)).filter((b): b is KitBox => !!b);
+    const gap = 0.01;
+    let x = -RACK_W / 2 + 0.014;
+    for (const b of order) {
+      const fits = x + b.w <= RACK_W / 2 - 0.014;
+      b.mesh.visible = fits && this.rackShown();
+      if (!fits) continue;
+      b.slotPos.set(x + b.w / 2, RACK_TIER * 2 + 0.009 + b.h / 2, 0.004);
+      x += b.w + gap;
+    }
+    if (this.rackHint) this.rackHint.visible = order.length === 0;
+    this.layoutRack();
   }
 
   private placeRack(): void {
@@ -4463,6 +4567,11 @@ export class StackerSystem extends createSystem({}) {
       b.mesh.position.copy(b.slotPos).applyMatrix4(obj.matrixWorld);
       b.mesh.quaternion.copy(obj.quaternion).multiply(b.slotQuat);
     }
+    const cam = this.snapCam;
+    if (cam && cam.state === 'home') {
+      cam.group.position.copy(cam.homePos).applyMatrix4(obj.matrixWorld);
+      cam.group.quaternion.copy(obj.quaternion).multiply(cam.homeQuat);
+    }
     this.shadowDirty = true;
   }
 
@@ -4480,7 +4589,12 @@ export class StackerSystem extends createSystem({}) {
       }
       b.mesh.visible = show;
     }
-    this.layoutRack();
+    if (this.snapCam) {
+      for (const h of this.hands) if (h.camera) this.releaseCamera(h);
+      this.snapCam.state = 'home';
+      this.snapCam.group.visible = show;
+    }
+    this.layoutMyBoxes();
   }
 
   private rackShown(): boolean {
@@ -4491,15 +4605,10 @@ export class StackerSystem extends createSystem({}) {
   private async paintBoxes(): Promise<void> {
     let art: ArtRenderer | null = null;
     try {
-      for (const box of this.boxes) {
-        const steps = await this.kitSteps(box.kit.id);
+      for (const box of [...this.boxes]) {
         art ??= new ArtRenderer();
-        const pieces: ArtPiece[] = [];
-        for (const b of steps.flat()) {
-          const p = this.kitPiece(b, 0, 0);
-          if (p) pieces.push({ geometry: this.lib.geometries[p.part], material: this.matFor(0, p.color), matrix: p.m });
-        }
-        box.paint(art.render(pieces, 'front'), art.render(pieces, 'back'), steps.length);
+        const photo = box.kit.mine ? await this.photoCanvas(this.myBoxes.find((m) => m.id === box.kit.id)?.photo) : null;
+        await this.paintBox(box, art, photo);
         await new Promise((r) => setTimeout(r, 0)); // let a frame through between kits
       }
     } catch (err) {
@@ -4507,6 +4616,263 @@ export class StackerSystem extends createSystem({}) {
     } finally {
       art?.dispose();
     }
+  }
+
+  /** Front and back art for one box; your boxes use your photo on the front. */
+  private async paintBox(box: KitBox, art: ArtRenderer, photo: HTMLCanvasElement | null): Promise<void> {
+    const steps = await this.kitSteps(box.kit.id);
+    const pieces: ArtPiece[] = [];
+    for (const b of steps.flat()) {
+      const p = this.kitPiece(b, 0, 0);
+      if (p) pieces.push({ geometry: this.lib.geometries[p.part], material: this.matFor(0, p.color), matrix: p.m });
+    }
+    box.paint(photo ?? art.render(pieces, 'front'), art.render(pieces, 'back'), steps.length);
+  }
+
+  private photoCanvas(src: string | undefined): Promise<HTMLCanvasElement | null> {
+    if (!src) return Promise.resolve(null);
+    return new Promise((resolve) => {
+      const img = new Image();
+      img.onload = () => {
+        const c = document.createElement('canvas');
+        c.width = img.width;
+        c.height = img.height;
+        c.getContext('2d')!.drawImage(img, 0, 0);
+        resolve(c);
+      };
+      img.onerror = () => resolve(null);
+      img.src = src;
+    });
+  }
+
+  // ---- box camera
+
+  private holdCamera(h: HandState, btn: Btn): void {
+    const cam = this.snapCam!;
+    for (const o of this.hands) if (o !== h && o.camera) o.camera = false;
+    cam.state = 'held';
+    h.camera = true;
+    h.holdButton = btn;
+    h.anchorDist = -1;
+    h.target = null;
+    this.tick(0.3);
+    if (h.mode === 'mouse') {
+      h.rotTarget.identity();
+      h.offsetQuat.identity();
+      return;
+    }
+    // In the hand, screen toward the eyes (the lens faces the way you're looking).
+    this.q1.copy(h.quat).invert();
+    const pos = this.v3.copy(h.point).addScaledVector(h.rayDir, 0.06);
+    this.player.head.getWorldPosition(this.v4).sub(pos);
+    const q = this.q2.setFromAxisAngle(this.up, Math.atan2(this.v4.x, this.v4.z));
+    h.offsetQuat.copy(this.q1).multiply(q);
+    h.offsetPos.copy(pos).sub(h.point).applyQuaternion(this.q1);
+  }
+
+  private carryCamera(h: HandState, delta: number): void {
+    const obj = this.snapCam!.group;
+    if (h.mode === 'mouse') {
+      // Desktop: it floats just in front of the view, looking where you look.
+      this.v1.copy(h.rayOrigin).addScaledVector(h.rayDir, 0.3);
+      this.q1.copy(h.quat);
+    } else {
+      this.v1.copy(h.offsetPos).applyQuaternion(h.quat).add(h.point);
+      this.q1.copy(h.quat).multiply(h.offsetQuat);
+    }
+    const a = 1 - Math.exp(-delta * (h.mode === 'hand' ? FOLLOW_HAND : FOLLOW_CTRL));
+    obj.position.lerp(this.v1, a);
+    obj.quaternion.slerp(this.q1, a);
+    obj.updateMatrixWorld(true);
+    // Shutter: A/X, or trigger when it's held by the grip; Space on the desktop.
+    const shoot = h.down.has('a') || (h.holdButton === 'squeeze' && h.down.has('trigger')) || (h.mode === 'mouse' && this.desktop.actions.has('shoot'));
+    if (shoot) this.shootBox();
+  }
+
+  private releaseCamera(h: HandState): void {
+    const cam = this.snapCam!;
+    h.camera = false;
+    h.holdButton = null;
+    cam.fromPos.copy(cam.group.position);
+    cam.fromQuat.copy(cam.group.quaternion);
+    cam.t = 0;
+    cam.state = 'returning';
+    cam.drawScreen(null, '#2a2f3a', 'Hold me up to your build');
+    // The viewfinder's own GL context only lives while the camera is in hand.
+    this.viewArt?.dispose();
+    this.viewArt = null;
+    this.viewGroup = null;
+    this.tick(0.2);
+  }
+
+  /** Each frame: fly home, poke-to-shoot with the other hand, and the viewfinder while held. */
+  private tickCamera(delta: number): void {
+    const cam = this.snapCam;
+    if (!cam || !cam.group.visible) return;
+    if (cam.state === 'returning') {
+      cam.t = Math.min(1, cam.t + delta / 0.35);
+      const e = 1 - (1 - cam.t) ** 3;
+      const rack = this.rack!.object3D!;
+      this.v1.copy(cam.homePos).applyMatrix4(rack.matrixWorld);
+      this.q1.copy(rack.quaternion).multiply(cam.homeQuat);
+      cam.group.position.lerpVectors(cam.fromPos, this.v1, e);
+      cam.group.quaternion.slerpQuaternions(cam.fromQuat, this.q1, e);
+      if (cam.t >= 1) cam.state = 'home';
+      this.shadowDirty = true;
+    }
+    cam.flash = Math.max(0, cam.flash - delta);
+    const holder = this.hands.find((h) => h.camera);
+    if (!holder) return;
+    // Hands: poke the red button with the other hand's index finger.
+    const other = this.hands.find((h) => h !== holder && h.mode === 'hand' && h.hasTip && !h.pieces);
+    if (other) {
+      const near = other.indexTip.distanceTo(cam.shutter.getWorldPosition(this.v1)) < 0.014;
+      if (near && !this.shutterArmed) {
+        this.shutterArmed = true;
+        this.shootBox();
+      } else if (!near) this.shutterArmed = false;
+    }
+    // Viewfinder: the build as the box art will show it, a few times a second.
+    if (++this.viewFrame % 3 !== 0 && cam.flash <= 0) return;
+    const caption = !this.placedRecs.length
+      ? 'Build something first'
+      : holder.mode === 'hand'
+        ? 'Poke the red button'
+        : holder.mode === 'mouse'
+          ? 'Space: take the photo'
+          : holder.holdButton === 'squeeze'
+            ? 'Trigger or A: take the photo'
+            : 'A: take the photo';
+    if (!this.placedRecs.length) {
+      cam.drawScreen(null, '#2a2f3a', caption);
+      return;
+    }
+    this.viewArt ??= new ArtRenderer();
+    const group = this.buildViewGroup();
+    const r = this.root.object3D!;
+    const pos = r.worldToLocal(cam.group.getWorldPosition(this.v5));
+    const quat = this.q3.copy(r.quaternion).invert().multiply(cam.group.getWorldQuaternion(this.q4));
+    this.viewArt.renderView(group, pos, quat, VIEW_FOV, cam.view);
+    cam.drawScreen(cam.view, this.buildColor(), caption);
+  }
+
+  /** The build as meshes for the camera's own renderer (rebuilt when the build changes). */
+  private buildViewGroup(): Group {
+    if (this.viewGroup && this.viewGen === this.editGen) return this.viewGroup;
+    const g = new Group();
+    for (const rec of this.placedRecs) {
+      const m = new Mesh(this.lib.geometries[rec.part], this.matFor(rec.finish, rec.color));
+      m.matrixAutoUpdate = false;
+      m.matrix.copy(rec.m);
+      g.add(m);
+    }
+    this.viewGroup = g;
+    this.viewGen = this.editGen;
+    return g;
+  }
+
+  /** The most common color in the build, for its box. */
+  private buildColor(): string {
+    const counts = new Map<number, number>();
+    for (const rec of this.placedRecs) counts.set(rec.color, (counts.get(rec.color) ?? 0) + 1);
+    let best = 0;
+    let n = -1;
+    for (const [c, k] of counts) if (k > n) [best, n] = [c, k];
+    return this.lib.colors[best]?.hex ?? '#2a2f3a';
+  }
+
+  /** The shutter: photograph the build, box it as a kit of your own, and send the box to the rack. */
+  private shootBox(): void {
+    const cam = this.snapCam!;
+    cam.flash = 0.3;
+    try {
+      this.beep(3200, 0, 0.02, 'square', 0.06);
+      this.beep(1800, 0.05, 0.05, 'square', 0.05);
+    } catch {
+      // audio is best-effort
+    }
+    for (const hand of HANDS) this.pulse(hand, 0.7, 40);
+    if (!this.placedRecs.length) return;
+    this.viewArt ??= new ArtRenderer();
+    const r = this.root.object3D!;
+    const pos = r.worldToLocal(cam.group.getWorldPosition(this.v5));
+    const quat = this.q3.copy(r.quaternion).invert().multiply(cam.group.getWorldQuaternion(this.q4));
+    const photo = document.createElement('canvas');
+    photo.width = photo.height = 640;
+    this.viewArt.renderView(this.buildViewGroup(), pos, quat, VIEW_FOV, photo);
+    const steps = this.buildSteps();
+    const n = this.myBoxes.length + 1;
+    const stored: StoredBox = {
+      id: `mine-${Date.now().toString(36)}`,
+      title: `My build ${n}`,
+      color: this.buildColor(),
+      pieces: this.placedRecs.length,
+      steps,
+      photo: photo.toDataURL('image/webp', 0.85),
+      at: new Date().toISOString(),
+    };
+    this.myBoxes.unshift(stored);
+    this.saveMyBoxes();
+    const box = this.addMyBox(stored);
+    box.mesh.visible = true;
+    void this.paintBox(box, this.viewArt, photo);
+    // The box pops out of the camera and flies to its place on the rack.
+    box.fromPos.copy(cam.group.position);
+    box.fromQuat.copy(cam.group.quaternion);
+    box.mesh.position.copy(box.fromPos);
+    box.t = 0;
+    box.state = 'returning';
+    this.layoutMyBoxes();
+    box.mesh.visible = true;
+  }
+
+  private saveMyBoxes(): void {
+    try {
+      localStorage.setItem('stacker.boxes', JSON.stringify(this.myBoxes));
+    } catch (err) {
+      console.warn('Could not store your boxes', err);
+    }
+  }
+
+  /** Your build as kit steps: every piece by its transform, bottom up, 3–5 a step. */
+  private buildSteps(): KitBlock[][] {
+    const L = dims.ldu;
+    const items = this.placedRecs.map((rec) => {
+      const e = rec.m.elements;
+      const box = this.lib.geometries[rec.part].boundingBox!.clone().applyMatrix4(rec.m);
+      const block: KitBlock = {
+        part: this.lib.parts[rec.part].id,
+        color: this.lib.colors[rec.color].code,
+        m: [e[0], e[4], e[8], e[1], e[5], e[9], e[2], e[6], e[10], e[12] / L, e[13] / L, e[14] / L].map((v) => Math.round(v * 1e5) / 1e5),
+      };
+      return { block, bottom: Math.round(box.min.y / dims.unit) };
+    });
+    items.sort((a, b) => a.bottom - b.bottom);
+    const steps: KitBlock[][] = [];
+    let cur: KitBlock[] = [];
+    let lvl: number | null = null;
+    for (const it of items) {
+      if (cur.length && (cur.length >= 5 || (it.bottom !== lvl && cur.length >= 3))) {
+        steps.push(cur);
+        cur = [];
+      }
+      cur.push(it.block);
+      lvl = it.bottom;
+    }
+    if (cur.length) steps.push(cur);
+    return steps;
+  }
+
+  /** Drop one of your boxes on the library: it's gone (from the rack and this device). */
+  private deleteMyBox(box: KitBox): void {
+    this.myBoxes = this.myBoxes.filter((m) => m.id !== box.kit.id);
+    this.saveMyBoxes();
+    this.boxes = this.boxes.filter((b) => b !== box);
+    this.kitData.delete(box.kit.id);
+    this.boxEntities.get(box)?.destroy();
+    this.boxEntities.delete(box);
+    this.click();
+    this.layoutMyBoxes();
   }
 
   private holdBox(h: HandState, btn: Btn, box: KitBox): void {
@@ -4565,6 +4931,10 @@ export class StackerSystem extends createSystem({}) {
     const box = h.box!;
     h.box = null;
     h.holdButton = null;
+    if (box.kit.mine && this.overLibrary(box.mesh.position)) {
+      this.deleteMyBox(box);
+      return;
+    }
     if (this.overRack(box.mesh.position)) this.returnBox(box);
     else box.state = 'loose';
     this.tick(0.2);
@@ -4573,7 +4943,7 @@ export class StackerSystem extends createSystem({}) {
   private overRack(pos: Vector3): boolean {
     if (!this.rackShown()) return false;
     const lo = this.rack!.object3D!.worldToLocal(this.v1.copy(pos));
-    return Math.abs(lo.x) < RACK_W / 2 + 0.03 && lo.y > -0.03 && lo.y < RACK_TIER * 2 + 0.06 && Math.abs(lo.z) < RACK_D / 2 + 0.06;
+    return Math.abs(lo.x) < RACK_W / 2 + 0.03 && lo.y > -0.03 && lo.y < RACK_TIER * 3 + 0.06 && Math.abs(lo.z) < RACK_D / 2 + 0.06;
   }
 
   private returnBox(b: KitBox): void {

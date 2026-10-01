@@ -4,7 +4,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 from iw import *
 def ok(name, cond, extra=''): print(('PASS ' if cond else 'FAIL ') + name, extra)
 R = 'controller-right'
-def state(): return js('return { boxes: s.boxes.map(b => b.state), vis: s.boxes.map(b => b.mesh.visible), rack: s.rack.object3D.visible, held: s.hands[1].box && s.hands[1].box.kit.id, kit: s.kit && s.kit.id, shelf: s.shelfItems.length }')
+def state(): return js('return { boxes: s.boxes.filter(b => !b.kit.mine).map(b => b.state), vis: s.boxes.filter(b => !b.kit.mine).map(b => b.mesh.visible), rack: s.rack.object3D.visible, held: s.hands[1].box && s.hands[1].box.kit.id, kit: s.kit && s.kit.id, shelf: s.shelfItems.length }')
 def wpos(expr): return js(f'return {expr}.getWorldPosition(new s.v1.constructor()).toArray()')
 def aim(target, back=(0.05, 0.1, 0.12)):
     move(R, [target[0] - back[0], target[1] + back[1], target[2] + back[2]], 0.2); look(R, target); time.sleep(0.25)
