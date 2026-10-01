@@ -2354,7 +2354,8 @@ export class StackerSystem extends createSystem({}) {
             for (const t of this.connsNear(Q, 1 - type, reach, this.near)) {
               const facing = A.dot(t.a);
               if (facing > FACING) continue;
-              cands.push({ D: this.alignTransform(P, A, cur[k], t), score: P.distanceTo(t.p) / dims.pitch + (1 + facing) * 2 });
+              const D = this.alignTransform(P, A, cur[k], t);
+              cands.push({ D, score: this.moveCost(anchor, D) + (1 + facing) * 2 });
             }
           }
         }
@@ -2388,7 +2389,7 @@ export class StackerSystem extends createSystem({}) {
     let bestScore = -Infinity;
     const tried: Matrix4[] = [];
     for (const cand of cands) {
-      if (tried.length >= 16) break;
+      if (tried.length >= 24) break;
       if (tried.some((d) => this.sameTransform(d, cand.D))) continue;
       tried.push(cand.D);
       const mats = cur.map((m) => m.clone().premultiply(cand.D));
@@ -2403,6 +2404,18 @@ export class StackerSystem extends createSystem({}) {
     if (!best) return false;
     for (const m of best) out.push({ m });
     return true;
+  }
+
+  /**
+   * How far a landing moves the held piece from where it's held, in studs: sliding sideways
+   * costs full price, settling straight down about a third (it's where it would fall), and
+   * popping up the most. So a block hovering over a gap drops into it rather than hopping
+   * sideways onto the blocks around it, and one held over a block still stacks on it.
+   */
+  private moveCost(anchor: Vector3, D: Matrix4): number {
+    const v = this.v3.copy(anchor).applyMatrix4(D).sub(anchor);
+    const flat = Math.hypot(v.x, v.z);
+    return (flat + (v.y < 0 ? -v.y * 0.35 : v.y * 1.2)) / dims.pitch;
   }
 
   /**
