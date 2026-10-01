@@ -71,3 +71,6 @@ Auditing parts, colors and kit steps needs the real geometry and the real manual
 ### Accounts on Spacefast Zero (Sept 2026, planned)
 Accounts, friends and sharing will run on the Space's own Zero runtime rather than WordPress or an outside backend: guests come built in (and carry their data into an account on sign-in), live queries cover feeds, and it keeps everything on Spacefast. Stacker talks to it through a small off-screen Preact bridge, since Zero's data API is hooks. Detail and spike results: [10](10-accounts.md).
 
+### A parts shelf instead of a library panel (Sept 2026)
+The flat library panel worked but felt like a web page floating in the room. Parts now live in a physical shelf: a six-sided drum of cubbies you spin (a lazy Susan keeps every category one swipe away without a wall of tabs), colors are paint jars you dip into, finishes are sample bricks you touch. Tools, undo and saves moved to a wrist menu (palm up), so nothing else needs a panel; the Kits tab went away because the box rack covers it. Only the faces turned toward you draw their parts, to keep draw calls near the old panel's.
+

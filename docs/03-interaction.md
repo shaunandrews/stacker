@@ -11,17 +11,19 @@ Stacker does its own input handling on top of IWSDK's raw input: controller pose
 | Press a button / tab / swatch | Point + trigger (or grip) | Poke with index finger, or point + pinch |
 | Duplicate what you're pointing at | Hold A / X — carry — let go to place. Or hold A / X and squeeze grip: the copy is held by the grip, so you can let go of A and turn it with the stick | Hold thumb + middle-finger pinch |
 | Select | Hold B / Y and pull the trigger on blocks (keep the trigger held and sweep to select more; on a selected block it deselects). The outline turns cyan while B / Y is held | Select tool |
-| Delete | Tap B / Y on a block (deletes on release), or press it while holding | Drop it on the library panel (it turns red) |
+| Delete | Tap B / Y on a block (deletes on release), or press it while holding · or drop it on the parts shelf | Drop it on the parts shelf (it turns red) |
 | Turn held block 90° | Thumbstick left / right (about the platform's up) | Rotate your wrist |
 | Tip held block 90° | Thumbstick up / down (about the platform axis nearest your controller's side) | Rotate your wrist |
-| Undo / redo | ↶ Undo / ↷ on the library's tool row | Same |
+| Tools, undo / redo, saves | Turn your left palm up: the wrist menu | Same |
+| Pick a part | Grab it from its cubby on the parts shelf | Pinch it |
+| Spin the parts shelf | Grab its top or bottom cap and swipe sideways · or tap a side face's sign | Same, pinching |
+| Color · finish | Dip the controller tip into a paint jar · touch a sample tile (or ray-press either) | Dip a fingertip · touch a tile |
 | Box your build | Grab the camera on top of the kit rack, aim, A/X (or trigger) | Hold it, poke its red button with the other hand |
 | Dim the lights | Reach up to the bulb above you and pull its cord down (grab the bead) | Pinch the bead and pull |
 | Move platform / tilt it | Grab a white edge bar | Pinch an edge bar |
 | Turn / scale platform | Hold an edge bar, grab a second edge (or the plate) with the other hand: turn your hands around each other, spread or close them | Same, with two pinches |
 | Resize platform | Grab a yellow corner | Pinch a yellow corner |
 | Move a panel or the kit shelf | Grab its white bar underneath | Pinch its bar |
-| Resize the library | Grab its yellow corner (bottom-right) | Pinch it |
 | Drag a slider | Point + hold trigger, sweep | Touch and slide, or pinch-drag |
 
 Destructive buttons ask for a second tap within 3 s: **Clear**, **Stress** (when there's a build), and starting a **kit** over a build.
@@ -42,7 +44,7 @@ The splash screen offers **Explore on this computer**: an orbit camera around th
 | Orbit / pan / zoom | Right-drag / Shift + right-drag or middle-drag / wheel |
 | Frame the platform | F |
 
-A carried block sits on whatever is under the cursor — a placed block or the plate — and the normal snap takes it from there. Over the library, it follows the cursor onto the panel (letting go removes it). Presses aim where the button went down, so a quick drag still grabs what was under the cursor.
+A carried block sits on whatever is under the cursor — a placed block or the plate — and the normal snap takes it from there. Over the parts shelf, it follows the cursor onto it (letting go removes it). Presses aim where the button went down, so a quick drag still grabs what was under the cursor.
 
 ## Input model
 
@@ -113,7 +115,7 @@ Parts listed in `tools/hinges.json` swing once placed: 1×2 hinges, swivel plate
 
 ## Releasing
 
-- Over the **library panel** → the pieces poof (deleted). The library tints red while a held block is over it.
+- Over the **parts shelf** → the pieces poof (deleted). The shelf's frame tints red while a held block is over it.
 - If `computeSnap` succeeds → cells are reserved immediately (so the other hand can't take them mid-animation), the pieces animate in, then move into their instanced batch, and the kit checks for a match.
 - Otherwise they stay **parked** in the air where you let go.
 
@@ -137,7 +139,7 @@ Handles are small and translucent (55%) until a hand points at one. Platform edg
 - **Two hands** (`tickTwoHand`): while one hand holds an edge bar, the other can grab another edge bar or anywhere on the plate. The platform then follows the hands' midpoint, turns about up as they turn around each other (it never tilts), and scales with the distance between them (0.75×–3×, a haptic tick every 0.25×). A white line joins the two grabs. Letting go with one hand settles the scale on the Size slider's 0.05 steps and the other hand carries on alone, without a jump. The plate surface is only a handle for the second hand, so a missed grab while building never moves the platform.
 - **Corner handles** move two edges in whole studs, 4–64 per side, never shrinking past what's built. The opposite corner stays put.
 - **Size slider** scales the platform (and loose blocks) around the plate center, 0.75×–3×. Handles counter-scale so they stay the same size in your hand.
-- **Library** — bar to move; yellow corner to resize (top-left stays fixed, 0.26–0.9 m wide, 0.3–0.9 m tall). Layout reflows: tabs wrap, the grid gains/loses columns and rows, colors wrap.
+- **Parts shelf** — bar at the front of its base to move it. **Wrist menu** — follows your left hand (below).
 - **Settings** — bar to move. See [06](06-rendering-and-performance.md).
 - **Kit shelf / manual** — bars to move. See [05](05-kits.md).
 
@@ -147,10 +149,24 @@ A light bulb hangs up and to your right (`lamp.ts`, placed with the panels; on t
 
 The level scales the key light, the fill and the environment reflections (on top of the look preset and sliders) and eases over a moment; the bulb's own glow follows it. It's saved with the look settings.
 
-## Library panel
+## Parts shelf
 
-Top to bottom: tool row (Build, Select, Paint, Deselect, ↶ Undo, ↷), tabs (Bricks, Plates, Tiles, Slopes, Curves, Round, Wedges, Windows, Minifigs, More, Kits, Saves), the part grid, a context row, the color swatches, credits.
+![The parts shelf](images/v13-shelf.png)
 
-- Catalog cells show a spinning preview of the part. **Grab** a cell to pull out a new block; **tap** it to drop one in front of the platform.
-- The context row changes with the tab: paging (◀ Tab n/N ▶), kit controls (Exit / ↺ Restart step / Skip ▶), or saves (Save / Slot n / Load).
-- Minifigs tab: 6 presets. Grabbing one carries legs + torso + head + headgear as one stacked group.
+A six-sided drum of cubbies floating over a round base, to the left of the platform (`shelf.ts`; desktop: behind the plate's left side). It turns like a lazy Susan, one group of categories per face: **Bricks · Plates & Tiles · Slopes & Curves · Round · Windows & Special · Figures & More** (the six minifig presets come first on the last face). Its front face turns toward where you stand.
+
+- **Pick a part:** grab it out of its cubby (near or by ray, or click-drag on the desktop); it comes out full size in your hand. The part under your pointer turns slowly
+- **Turn the drum:** grab the top or bottom cap and swipe sideways; it follows your hand and settles on the nearest face, ticking as faces pass. Or tap the sign on a side face and it turns there
+- **More parts:** faces with more than 12 parts page with ◀ ▶ on their bottom band
+- **Colors:** a ring of paint jars round the base's front, one per palette color (see-through colors in clear jars). Dip the controller tip or a fingertip into one, or ray-press it, and every part in the cubbies takes that color; with a selection, it recolors the selection. The chosen jar sits up with a white ring
+- **Finishes:** three sample bricks on the base's right (plastic, wood, clear), in the current color; touch one to switch
+- **Delete:** let go of blocks (or one of your boxes) over the shelf; its frame turns red first
+- Only the faces turned toward you get their parts drawn
+
+## Wrist menu
+
+Turn your left palm up (hands: from the knuckles; controllers: roll the left controller palm-up) and a small menu opens above your wrist, facing you: **Build · Select · Paint**, **Undo · Redo · Deselect**, **◀ Slot n ▶** with **Save · Load**, and during a kit **Exit kit · Restart · Skip**. Press it with the other hand (poke or ray). Turn your palm down and it closes. On the desktop it's docked by the shelf and always open.
+
+## Settings → Controls
+
+**Controls ▸** in Settings lists every gesture and button mapping for controllers and hands.

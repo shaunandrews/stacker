@@ -17,8 +17,9 @@ def carry_to(g, dy=0.004):
         c = [c[i]+d[i] for i in range(3)]
         cli('xr','set-transform', inp={'device':R,'position':{'x':c[0],'y':c[1],'z':c[2]}}); time.sleep(0.3)
 def kit_start(k):
-    js('s.exitKit(); s.clearPlaced(); return 1')  # with a build on the plate, starting a kit asks for a second tap
-    s = probe(); ray_press(s['ui'][tab_id('Kits')]); s = probe(); ray_press(s['ui'][f'cell:{k}']); time.sleep(1)
+    js('s.exitKit(); s.clearPlaced(); s.wristPinned = true; return 1')  # kit controls are on the wrist menu: dock it
+    kit = js(f'return [s.boxes[{k}].kit.id, s.boxes[{k}].kit.title]')
+    js(f'await s.startKit("{kit[0]}", "{kit[1]}"); return 1'); time.sleep(1)
     return probe()
 cli('xr','set-transform', inp={'device':'headset','orientation':{'pitch':-40,'yaw':0,'roll':0}})
 # House: grab from shelf, carry near ghost → magnet, match
@@ -38,7 +39,7 @@ reset_ctrl(); tip_at(R, b); btn(R, 1, 1); time.sleep(0.2)
 ok('pulling it back restores the ghost', probe()['kit']['remaining'] == s['kit']['remaining'])
 move(R, [b[0], b[1] + 0.25, b[2] + 0.2], 0.3); btn(R, 1, 0); time.sleep(0.3)   # park it in the air
 # restart step → everything back on the shelf
-s3 = probe(); ray_press(s3['ui']['row:mid']); time.sleep(0.5)
+s3 = probe(); ray_press(s3['ui']['kit:restart']); time.sleep(0.5)
 s4 = probe(); ok('restart step refills shelf', s4['kit']['shelf'] == s['kit']['shelf'] and s4['kit']['remaining'] == s['kit']['remaining'], s4['kit'])
 # move the shelf by its bar
 bar = s4['shelfBar']; sh0 = s4['shelf'][0]['w']
@@ -60,5 +61,5 @@ for n in range(12):
         s2 = probe(); free_found = True
         ok('free part (%s) snaps into its ghost' % t['part'], s2['kit'] and s2['kit']['remaining'] == s['kit']['remaining'] - 1 or s2['kit']['step'] > s['kit']['step'], (h['snap'], s2['kit']))
         continue
-    ray_press(s['ui']['row:right']); time.sleep(0.3)
+    ray_press(s['ui']['kit:skip']); time.sleep(0.3)
 s = probe(); ok('go-kart completes', s['kit'] is None and s['placed'] == 29, s['placed'])

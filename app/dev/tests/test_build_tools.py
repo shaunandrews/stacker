@@ -11,7 +11,7 @@ def ray_press(target, b=0):
 def reset_ctrl():
     cli('xr','set-transform', inp={'device':R,'orientation':{'x':0,'y':0,'z':0,'w':1}})
 cli('xr','set-transform', inp={'device':'headset','orientation':{'pitch':-40,'yaw':0,'roll':0}})
-js('s.exitKit(); s.clearPlaced(); s.showTab(0); s.tool = "build"; s.selection.clear(); return 1')
+js('s.exitKit(); s.clearPlaced(); s.facePage[0] = 0; s.drum.angle = s.drum.target = 0; s.fillPartsShelf(); s.tool = "build"; s.selection.clear(); s.wristPinned = true; return 1'); time.sleep(0.5)
 s = probe(); root = s['root']['p']; top = root[1]
 # 1. catalog near grab → place
 tip_at(R, s['previews'][0]); btn(R, 1, 1)
@@ -58,6 +58,7 @@ b = s['placedList'][0]['w']
 move(R, [b[0] + 0.05, top + 0.2, b[2] + 0.3], 0.3); look(R, b); time.sleep(0.2); btn(R, 4, 1); btn(R, 4, 0); time.sleep(0.3)
 s = probe(); ok('B deletes', s['placed'] < n0, (n0, s['placed'], sel))
 # 8. save / clear / load
-ray_press(s['ui'][tab_id('Saves')]); ray_press(s['ui']['cell:1']); ray_press(s['ui']['row:left'])
-n1 = probe()['placed']; call('clearPlaced'); ray_press(s['ui']['row:right']); time.sleep(0.3)
+js('s.slot = 0; s.redrawUi(); return 1'); s = probe(); ray_press(s['ui']['slot:next']); ray_press(s['ui']['save'])
+ok('wrist menu picks slot 2', js('return s.slot') == 1)
+n1 = probe()['placed']; call('clearPlaced'); ray_press(s['ui']['load']); time.sleep(0.3)
 s = probe(); ok('save + load slot 2', s['placed'] == n1 and n1 > 0, (n1, s['placed']))

@@ -1,7 +1,7 @@
 """Emulator regression test — run from app/: python3 dev/tests/test_box_camera.py
 
 The box camera: grab it off the rack, photograph the build, and a box of your own lands
-on the rack's top tier; it survives a reload, opens as a kit, and the library deletes it.
+on the rack's top tier; it survives a reload, opens as a kit, and the parts shelf deletes it.
 """
 import os, sys
 sys.path.insert(0, os.path.dirname(__file__))
@@ -51,15 +51,15 @@ k = js('return { steps: s.kit.steps.length, pieces: s.kit.steps.flat().length }'
 ok('opens as a kit', k['pieces'] == 56 and k['steps'] >= 10, k)
 js('for (let i = 0; i < 40 && s.kit; i++) s.skipStep(); return 1'); time.sleep(1)
 ok('the kit rebuilds all of it', probe()['placed'] == 56, probe()['placed'])
-# Drop it on the library: deleted
+# Drop it on the parts shelf: deleted
 js('s.exitKit(); return 1'); time.sleep(0.5)
 bp = js('const b = s.boxes.find((b) => b.kit.mine); return b.mesh.getWorldPosition(s.v1).toArray()')
 reset_ctrl(); tip_at(R, bp); btn(R, GRIP, 1); time.sleep(0.4)
-# Put the box's center just in front of the library (the box sits ahead of the controller)
-tgt = js('const V = s.v1.constructor; const bg = s.library.bg; const c = bg.getWorldPosition(new V()); const n = new V(0, 0, 1).applyQuaternion(bg.getWorldQuaternion(new s.q1.constructor())); const want = c.addScaledVector(n, 0.03); const h = s.hands[1]; const off = h.box.mesh.position.clone().sub(h.point); return want.sub(off).toArray()')
+# Put the box's center inside the shelf (the box sits ahead of the controller)
+tgt = js('const V = s.v1.constructor; const want = s.drum.drum.getWorldPosition(new V()); const h = s.hands[1]; const off = h.box.mesh.position.clone().sub(h.point); return want.sub(off).toArray()')
 move(R, [tgt[0], tgt[1], tgt[2] + 0.035], 0.6); time.sleep(0.5)
-red = js('return s.library.bg.material.color.getHex() !== 0x1b1f29')
-ok('library turns red under your box', red)
+red = js('return s.drum.frameMat.color.getHex() !== 0xf1f2f4')
+ok('shelf turns red under your box', red)
 btn(R, GRIP, 0); time.sleep(0.5)
-ok('dropping it on the library deletes it', mine() == 0 and not js('return !!s.boxes.find((b) => b.kit.mine)'), mine())
+ok('dropping it on the shelf deletes it', mine() == 0 and not js('return !!s.boxes.find((b) => b.kit.mine)'), mine())
 js('s.clearPlaced(); return 1')

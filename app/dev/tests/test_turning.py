@@ -17,7 +17,7 @@ def up_axis(m): return [m[1], m[4], m[7]]  # the block's local Y in platform coo
 
 ensure_xr()
 cli('xr', 'set-transform', inp={'device': 'headset', 'orientation': {'pitch': -40, 'yaw': 0, 'roll': 0}})
-js('s.exitKit(); s.clearPlaced(); s.showTab(0); s.tool = "build"; s.selection.clear(); s.setScale(1); s.recenter(); return 1'); time.sleep(0.5)
+js('s.exitKit(); s.clearPlaced(); s.facePage[0] = 0; s.drum.angle = s.drum.target = 0; s.fillPartsShelf(); s.tool = "build"; s.selection.clear(); s.setScale(1); s.recenter(); return 1'); time.sleep(0.5)
 s = probe(); root = s['root']['p']; top = root[1]
 # Grab from the library with a twisted wrist, so the block starts off-axis
 cli('xr', 'set-transform', inp={'device': R, 'orientation': {'x': 0, 'y': 0, 'z': 0, 'w': 1}})

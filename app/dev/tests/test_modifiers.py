@@ -16,7 +16,7 @@ def held_yaw(): return js('const q = s.hands[1].pieces[0].block.mesh.quaternion;
 
 ensure_xr()
 cli('xr', 'set-transform', inp={'device': 'headset', 'orientation': {'pitch': -40, 'yaw': 0, 'roll': 0}})
-js('s.exitKit(); s.clearPlaced(); s.showTab(0); s.tool = "build"; s.selection.clear(); s.setScale(1); s.recenter(); return 1'); time.sleep(0.5)
+js('s.exitKit(); s.clearPlaced(); s.facePage[0] = 0; s.drum.angle = s.drum.target = 0; s.fillPartsShelf(); s.tool = "build"; s.selection.clear(); s.setScale(1); s.recenter(); return 1'); time.sleep(0.5)
 s = probe(); root = s['root']['p']; top = root[1]
 # Two blocks to work with
 for dx in (-0.03, 0.03):

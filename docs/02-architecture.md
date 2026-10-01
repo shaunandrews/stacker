@@ -42,6 +42,9 @@ stacker/
     │   ├── kit-boxes.ts    ← kit boxes (faces, tear strip) and ArtRenderer (box art, manual pages)
     │   ├── kits.ts         ← KITS list, kit block format, kit piece → matrix
     │   ├── manual.ts       ← ManualPainter: draws manual pages (the headset and the catalog)
+    │   ├── shelf.ts        ← the parts shelf: six-sided drum of cubbies, paint jars, sample tiles
+    │   ├── snap-camera.ts  ← the box camera on the kit rack
+    │   ├── lamp.ts         ← the pull-cord lamp
     │   ├── catalog/        ← the catalog page's views, audit checks and viewers
     │   ├── desktop.ts      ← mouse + keyboard input for the desktop view
     │   ├── splash.ts       ← loading progress on the splash screen
@@ -94,7 +97,7 @@ interface Loose { entity; mesh; part; color; finish }   // held, parked, on the 
 - `batches: Map<'part|finish', Batch>` — one `InstancedMesh` per part × finish, color per instance
 - `loose: Loose[]` — every free-floating block
 - `hands: HandState[2]` — per-hand input, target, and what's being carried, swung, torn or dragged
-- `panels: Panel[]` — library, settings, and (in manual mode) the kit manual
+- `panels: Panel[]` — the wrist menu, settings, and (in manual mode) the kit manual; the parts shelf is its own object (`drum`)
 - `kit: KitState | null` — current kit, step, ghosts, matches, shelf contents, manual page and zoom
 - `boxes: KitBox[]` — the kit boxes and their state (rack, held, loose, returning, opening)
 

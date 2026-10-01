@@ -69,7 +69,11 @@ def js(code):
     open(os.path.join(ARTIFACTS, 'js.txt'), 'w').write(code)
     return cli('browser', 'run', 'dev/js.mjs')
 
+def pin_wrist(on=True):
+    """Dock the wrist menu by the shelf, always open, so tests can press its buttons by ray."""
+    return js(f's.wristPinned = {"true" if on else "false"}; return 1')
+
 def tab_id(name):
-    """UI id of a library tab by its label (tab order changes as tabs are added)."""
+    """(Old library tabs are gone; kept so stale scripts fail loudly.)"""
     names = js('return [...Array(24).keys()].map((k) => s.uiLabel({ id: "tab:" + k, kind: "tab", value: k }))')
     return f"tab:{names.index(name)}"

@@ -11,16 +11,10 @@ def ray_press(target, b=0):
 def reset_ctrl(): cli('xr','set-transform', inp={'device':R,'orientation':{'x':0,'y':0,'z':0,'w':1}})
 cli('browser','reload'); time.sleep(6); cli('xr','enter'); time.sleep(3)
 cli('xr','set-transform', inp={'device':'headset','orientation':{'pitch':-30,'yaw':0,'roll':0}})
-# Library size, guide mode and Advanced persist across reloads: start every run from the defaults.
-js('s.exitKit(); s.clearPlaced(); s.instructions = "ghosts"; s.applyInstructions(); s.advanced = false; s.layoutSettings(); s.library.w = 0.32; s.library.h = 0.52; s.sizePanel(s.library); s.layoutLibrary(); s.recenter(); return 1')
+# Guide mode and Advanced persist across reloads: start every run from the defaults.
+js('s.exitKit(); s.clearPlaced(); s.instructions = "ghosts"; s.applyInstructions(); s.advanced = false; s.controlsOpen = false; s.layoutSettings(); s.recenter(); return 1')
 s = probe()
-# 1. library resize: grab the corner and drag down-right
-c = s['library']['resize']; n0 = s['cellsPerPage']
-reset_ctrl(); tip_at(R, c); btn(R, 1, 1)
-cli('xr','animate-to', inp={'device':R,'position':{'x':c[0]+0.12,'y':c[1]-0.1,'z':c[2]+0.035+0.08},'duration':0.6}); time.sleep(0.9)
-btn(R, 1, 0)
-s = probe(); ok('library resize grows the grid', s['cellsPerPage'] > n0, (n0, s['cellsPerPage'], s['library']['w'], s['library']['h']))
-# 2. look presets, Advanced, then a settings slider (key light) via ray drag
+# 1. look presets, Advanced, then a settings slider (key light) via ray drag
 ray_press(s['ui']['style:3'])
 s1 = probe(); ok('Studio preset fades the room', s1['visual']['backdrop'] > 0.5, s1['visual']['backdrop'])
 ok('sliders hidden until Advanced', 'slider:key' not in s1['ui'])

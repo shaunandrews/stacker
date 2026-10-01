@@ -53,6 +53,7 @@ import type { KitBlock } from './kits.js';
 import { MANUAL_ZOOM, ManualPainter } from './manual.js';
 import { DIM_LEVELS, PULL_CLICK, PULL_MAX, PullLamp } from './lamp.js';
 import { SnapCamera, VIEW_FOV } from './snap-camera.js';
+import { CUBBY_H, CUBBY_W, FACE_STEP, FACES, JAR_H, JAR_R, PartDrum, PER_FACE, PREVIEW_FIT as CUBBY_FIT, cubbyCenter } from './shelf.js';
 import { HDRLoader } from 'three/examples/jsm/loaders/HDRLoader.js';
 import { CONTACT, envId, ENVS, finishIndex, FINISHES, makeBackdrop, makeEnvScene, makeFinish, OCCLUSION, paintBackdrop, patchBlockShader, STYLES } from './look.js';
 import { progress } from './splash.js';
@@ -90,14 +91,37 @@ const SNAP_TIME = 0.07;
 const GHOST_PULL = 0.06; // a kit piece jumps into its ghost (position and angle) within this distance
 
 // ---- Panels (local frame: face is the XY plane, +Z toward the user, origin at center) ----
-const CELL_W = 0.07;
-const CELL_H = 0.062;
 const GAP = 0.005;
 const MARGIN = 0.012;
 const PANEL_BG = 0x1b1f29;
-const PREVIEW_FIT = 0.042;
 const SLOTS = 6;
-const TAB_NAMES = [...TABS, 'Kits', 'Saves'];
+
+/** Settings → Controls: [action, how] (no "how" = a heading). */
+const CONTROLS: Array<[string, string?]> = [
+  ['Controllers'],
+  ['Grab a part or block', 'Grip or trigger, near or by ray'],
+  ['Duplicate', 'Hold A/X on a block · or A/X + grip, then let go of A'],
+  ['Turn the held block', 'Thumbstick ← → (squares it to the platform)'],
+  ['Tip the held block', 'Thumbstick ↑ ↓'],
+  ['Select', 'Hold B/Y + trigger · sweep to select more'],
+  ['Delete', 'Tap B/Y on a block · or drop it on the shelf'],
+  ['Move / tilt the platform', 'Grab a white edge bar'],
+  ['Turn / scale the platform', 'An edge bar in each hand: turn or spread them'],
+  ['Resize the platform', 'Grab a yellow corner'],
+  ['Spin the parts shelf', 'Grab its top or bottom and swipe'],
+  ['Color · finish', 'Dip into a paint jar · touch a sample tile'],
+  ['Tools, undo, saves', 'Turn your left palm up (wrist menu)'],
+  ['Box your build', 'Camera on the rack, then A/X'],
+  ['Dim the lights', "Pull the bulb's cord"],
+  ['Hands'],
+  ['Grab', 'Pinch thumb and index'],
+  ['Duplicate', 'Pinch thumb and middle finger'],
+  ['Press a button', 'Poke it with your index finger'],
+  ['Turn the held block', 'Rotate your wrist'],
+  ['Color · finish', 'Dip a fingertip into a jar · touch a tile'],
+  ['Wrist menu', 'Turn your left palm up'],
+  ['Camera shutter', 'Poke the red button with the other hand'],
+];
 const SHELF_W = 0.34;
 const SHELF_D = 0.16;
 const SHELF_FIT = 0.075; // big pieces (baseplates) sit on the shelf shrunk to this size
@@ -199,8 +223,8 @@ const HANDS = ['left', 'right'] as const;
 type Hand = (typeof HANDS)[number];
 type Btn = 'squeeze' | 'trigger' | 'a' | 'b' | 'pinch' | 'mid';
 type Tool = 'build' | 'select' | 'paint';
-type PanelId = 'library' | 'settings' | 'manual';
-type FrameKind = 'platform' | 'shelf' | 'rack' | PanelId;
+type PanelId = 'wrist' | 'settings' | 'manual';
+type FrameKind = 'platform' | 'shelf' | 'rack' | 'drum' | PanelId;
 
 /** Where a block sits: a full transform in platform-local (unscaled) meters. */
 interface Placement {
@@ -299,7 +323,7 @@ interface Panel {
 
 interface UiItem {
   id: string;
-  kind: 'button' | 'tab' | 'swatch' | 'cell' | 'slider' | 'label' | 'finish';
+  kind: 'button' | 'slider' | 'label';
   value: number;
   x: number;
   y: number;
@@ -315,7 +339,8 @@ interface UiItem {
   slot?: [InstancedMesh, number]; // swatches: their instance
 }
 
-type TargetKind = 'placed' | 'loose' | 'cell' | 'ui' | 'edge' | 'corner' | 'bar' | 'resize' | 'box' | 'tear' | 'pull' | 'camera';
+type TargetKind = 'placed' | 'loose' | 'cell' | 'ui' | 'edge' | 'corner' | 'bar' | 'resize' | 'box' | 'tear' | 'pull' | 'camera' | 'spin' | 'prop';
+type PropKind = 'jar' | 'tile' | 'prev' | 'next' | 'face';
 
 interface Target {
   kind: TargetKind;
@@ -323,6 +348,8 @@ interface Target {
   loose?: Loose;
   ui?: UiItem;
   box?: KitBox;
+  cubby?: { face: number; slot: number }; // a part in the shelf
+  prop?: { type: PropKind; value: number }; // jars, sample tiles, shelf paging and signs
   corner?: number;
   frame?: FrameKind;
   obj?: Object3D;
@@ -370,6 +397,9 @@ interface HandState {
   holdButton: Btn | null;
   held: Set<Btn>; // buttons down right now (controllers and mouse)
   camera: boolean; // holding the box camera
+  spin: { a0: number; drum0: number } | null; // turning the parts shelf by its cap
+  dip: string | null; // the shelf prop the fingertip (or controller tip) is touching
+  palm: Vector3; // world direction the palm faces (hands: from the joints; controllers: estimated)
   pulling: boolean; // holding the lamp's pull cord
   pullFrom: number; // world height where the pull started
   pullClicked: boolean; // this pull already clicked (let the cord back up to pull again)
@@ -495,12 +525,17 @@ export class StackerSystem extends createSystem({}) {
 
   // Panels
   private panels: Panel[] = [];
-  private library!: Panel;
+  private drum!: PartDrum;
+  private facePage = FACES.map(() => 0);
+  private faceEntryCache = new Map<number, number[]>();
+  private shelfFront = -1; // face the previews were last shown for
+  private shelfSpinTick = 0;
+  private wrist!: Panel;
+  private wristOpen = 0; // 0–1, eased
+  private wristPinned = false; // tests and the desktop: docked by the shelf, always open
+  private controlsOpen = false;
   private settings!: Panel;
   private manual: Panel | null = null;
-  private cellsPerPage = 12;
-  private tab = 0;
-  private page = 0;
   private color = 0;
   private slot = 0;
   private statsCanvas: HTMLCanvasElement | null = null;
@@ -696,10 +731,15 @@ export class StackerSystem extends createSystem({}) {
       this.twoHandLine.visible = false;
       this.world.createTransformEntity(this.twoHandLine, { persistent: true });
       this.buildPlatform();
-      this.library = this.createPanel('library', 0.32, 0.52, true);
+      const tile = this.lib.geometries[this.lib.byId.get('3003') ?? 0];
+      this.drum = new PartDrum(this.lib.colors.length, FINISHES.length, tile);
+      this.track(this.world.createTransformEntity(this.drum.root));
+      this.wrist = this.createPanel('wrist', 0.24, 0.12, false);
+      this.wrist.bar.visible = false;
       this.settings = this.createPanel('settings', 0.46, 0.57, false);
       this.setEnv(this.envId);
-      this.layoutLibrary();
+      this.fillPartsShelf();
+      this.layoutWrist();
       this.layoutSettings();
       this.placeDefault(new Vector3(0, 0.8, -0.5), 0);
       const saved = this.readStore('stacker.autosave');
@@ -745,7 +785,7 @@ export class StackerSystem extends createSystem({}) {
     this.tickLamp(delta);
     this.tickCamera(delta);
     // The library turns red while a held block is over it: letting go removes it.
-    (this.library.bg.material as MeshBasicMaterial).color.setHex(trash ? 0x5c1f27 : PANEL_BG);
+    this.drum.frameMat.color.setHex(trash ? 0xe25c5c : 0xf1f2f4);
     let hot = false;
     for (const h of this.hands) hot ||= h.frame === 'platform' || h.target?.kind === 'edge' || h.target?.kind === 'corner';
     this.handleMat.opacity = this.cornerMat.opacity = hot ? 1 : HANDLE_IDLE;
@@ -763,7 +803,8 @@ export class StackerSystem extends createSystem({}) {
       this.armed = null;
       this.redrawUi();
     }
-    this.spinPreviews(delta);
+    this.tickShelf(delta);
+    this.tickWrist(delta);
     this.updateSelectionOutlines();
     // Redraw shadows only while something that casts them moves, or after a change —
     // last, so everything this frame changed is in.
@@ -1117,12 +1158,16 @@ export class StackerSystem extends createSystem({}) {
     };
     if (this.desktop.enabled && !this.renderer.xr.isPresenting) {
       // Desktop: panels stand upright behind the plate's sides, facing a camera out front.
-      place(this.library.entity.object3D!, x0 * P - 0.2, this.library.h / 2 - 0.02, z0 * P + 0.08, 0.3, 0);
+      place(this.drum.root, x0 * P - 0.36, -0.06, z0 * P + 0.1, 0.35, 0);
+      place(this.wrist.entity.object3D!, x0 * P - 0.08, 0.36, z0 * P + 0.08, 0.3, 0);
       place(this.settings.entity.object3D!, x1 * P + 0.28, this.settings.h / 2 - 0.02, z0 * P + 0.02, -0.3, 0);
       if (this.manual) place(this.manual.entity.object3D!, x1 * P + 0.22, 0.29, zc + 0.12, -0.7, -0.2);
     } else {
-      place(this.library.entity.object3D!, x0 * P - 0.21, 0.17, zc + 0.06, 0.55, -0.3);
-      place(this.settings.entity.object3D!, x0 * P - 0.6, 0.2 + (0.57 - this.settings.h) / 2, zc + 0.24, 1.05, -0.25);
+      // The shelf's front face turns toward where you stand (0.45 m in front of the plate's center).
+      const sx = x0 * P - 0.34;
+      place(this.drum.root, sx, -0.06, zc + 0.04, Math.atan2(((x0 + x1) / 2) * P - sx, 0.41), 0);
+      place(this.settings.entity.object3D!, x0 * P - 0.74, 0.2 + (0.57 - this.settings.h) / 2, zc + 0.32, 1.1, -0.25);
+      place(this.wrist.entity.object3D!, x0 * P - 0.12, 0.2, zc + 0.24, 0.6, -0.3); // docked spot (pinned / tests)
       if (this.manual) place(this.manual.entity.object3D!, x1 * P + 0.2, 0.3, zc - 0.1, -0.55, -0.3);
     }
     if (this.shelf) this.placeShelf();
@@ -1236,135 +1281,364 @@ export class StackerSystem extends createSystem({}) {
     return item;
   }
 
-  /** Library: tools, tabs, a grid that grows with the panel, paging/kit/save row, colors. */
-  private layoutLibrary(): void {
-    const p = this.library;
+  /** The wrist menu: tools, undo/redo, selection, save slots, and kit controls during a kit. */
+  private layoutWrist(): void {
+    const p = this.wrist;
     this.clearPanel(p);
-    const W = p.w;
-    const H = p.h;
-    const left = -W / 2 + MARGIN;
-    const inner = W - 2 * MARGIN;
-    let y = H / 2 - MARGIN;
-
-    const tools: Array<[string, number]> = [
-      ['tool:build', 1],
-      ['tool:select', 1],
-      ['tool:paint', 1],
-      ['deselect', 1.2],
-      ['undo', 1],
-      ['redo', 0.45],
+    const rows: string[][] = [
+      ['tool:build', 'tool:select', 'tool:paint'],
+      ['undo', 'redo', 'deselect'],
+      ['slot:prev', 'slot', 'slot:next'],
+      ['save', 'load'],
     ];
-    const unit = (inner - (tools.length - 1) * GAP) / tools.reduce((sum, [, wt]) => sum + wt, 0);
-    let tx = left;
-    for (const [id, wt] of tools) {
-      this.addUi(p, id, 'button', 0, tx + (unit * wt) / 2, y - 0.012, unit * wt, 0.024);
-      tx += unit * wt + GAP;
+    if (this.kit) rows.push(['kit:exit', 'kit:restart', 'kit:skip']);
+    const rh = 0.024;
+    const h = rows.length * (rh + GAP) - GAP + 2 * MARGIN;
+    if (Math.abs(h - p.h) > 1e-4) {
+      p.h = h;
+      this.sizePanel(p);
     }
-    y -= 0.024 + GAP;
-    const tabW = 0.05;
-    const perRow = Math.max(1, Math.floor((inner + GAP) / (tabW + GAP)));
-    TAB_NAMES.forEach((_, k) => {
-      const col = k % perRow;
-      const row = Math.floor(k / perRow);
-      this.addUi(p, `tab:${k}`, 'tab', k, left + tabW / 2 + col * (tabW + GAP), y - 0.0115 - row * (0.023 + GAP), tabW, 0.023);
-    });
-    y -= Math.ceil(TAB_NAMES.length / perRow) * (0.023 + GAP) + GAP;
-
-    // Bottom up: credits, colors, paging row.
-    let yb = -H / 2 + MARGIN;
-    this.addUi(p, 'credits', 'label', 0, 0, yb + 0.006, inner, 0.012);
-    yb += 0.012 + GAP;
-    const sw = 0.0183;
-    const swPer = Math.max(4, Math.floor((inner + 0.0015) / sw));
-    const swRows = Math.ceil(this.lib.colors.length / swPer);
-    const swatchGeo = new RoundedBoxGeometry(0.0165, 0.0165, 0.005, 2, 0.003);
-    p.owned.push(swatchGeo);
-    // Two draws for all the swatches: opaque colors as plastic, see-through ones as clear.
-    const trans = this.lib.colors.filter((_, k) => this.lib.isTrans(k)).length;
-    const sets = [finishIndex('plastic'), finishIndex('clear')].map((fin, j) => {
-      const im = new InstancedMesh(swatchGeo, this.matFor(fin, null), j ? trans : this.lib.colors.length - trans);
-      im.frustumCulled = false;
-      p.owned.push(im);
-      this.addContent(p, im);
-      return { im, n: 0 };
-    });
-    this.lib.colors.forEach((_, k) => {
-      const row = swRows - 1 - Math.floor(k / swPer);
-      const inRow = Math.min(swPer, this.lib.colors.length - Math.floor(k / swPer) * swPer);
-      const x = ((k % swPer) - (inRow - 1) / 2) * sw;
-      const yy = yb + 0.01 + row * 0.02;
-      const set = sets[this.lib.isTrans(k) ? 1 : 0];
-      set.im.setColorAt(set.n, this.colors[k]);
-      // An invisible marker keeps the swatch's place for hit tests and probes.
-      const mesh = new Mesh();
-      mesh.visible = false;
-      mesh.position.set(x, yy, 0.004);
-      this.addContent(p, mesh);
-      p.items.push({ id: `swatch:${k}`, kind: 'swatch', value: k, x, y: yy, w: 0.018, h: 0.019, mesh, panel: p, hover: false, slot: [set.im, set.n++] });
-    });
-    yb += swRows * 0.02 + GAP;
-    // Finishes: what the next block is made of (and, with a selection, restyles it).
-    const fw = 0.047;
-    const fPer = Math.max(1, Math.floor((inner + GAP) / (fw + GAP)));
-    const fRows = Math.ceil(FINISHES.length / fPer);
-    const ball = new SphereGeometry(0.0055, 20, 12);
-    p.owned.push(ball);
-    FINISHES.forEach((_, k) => {
-      const row = fRows - 1 - Math.floor(k / fPer);
-      const col = k % fPer;
-      const x = left + fw / 2 + col * (fw + GAP);
-      const yy = yb + 0.012 + row * (0.024 + GAP);
-      const item = this.addUi(p, `finish:${k}`, 'finish', k, x, yy, fw, 0.024);
-      const sphere = new Mesh(ball, this.matFor(k, this.color));
-      sphere.position.set(x - fw / 2 + 0.008, yy, 0.007);
-      this.addContent(p, sphere);
-      item.preview = sphere;
-    });
-    yb += fRows * (0.024 + GAP);
-    const rowY = yb + 0.013;
-    this.addUi(p, 'row:left', 'button', 0, left + 0.035, rowY, 0.07, 0.026);
-    this.addUi(p, 'row:mid', 'button', 0, 0, rowY, Math.min(0.14, inner - 0.16), 0.026);
-    this.addUi(p, 'row:right', 'button', 0, -left - 0.035, rowY, 0.07, 0.026);
-    yb = rowY + 0.013 + GAP;
-
-    const cols = Math.max(1, Math.floor((inner + GAP) / (CELL_W + GAP)));
-    const rows = Math.max(1, Math.floor((y - yb + GAP) / (CELL_H + GAP)));
-    this.cellsPerPage = cols * rows;
-    const gridW = cols * CELL_W + (cols - 1) * GAP;
-    for (let k = 0; k < cols * rows; k++) {
-      const x = -gridW / 2 + CELL_W / 2 + (k % cols) * (CELL_W + GAP);
-      const yy = y - CELL_H / 2 - Math.floor(k / cols) * (CELL_H + GAP);
-      const item = this.addUi(p, `cell:${k}`, 'cell', k, x, yy, CELL_W, CELL_H);
-      const preview = new Mesh(this.lib.geometries[0], this.matFor(this.finish, this.color));
-      preview.name = 'CatalogItem';
-      preview.position.set(x, yy + 0.007, 0.022);
-      this.addContent(p, preview);
-      item.preview = preview;
+    const left = -p.w / 2 + MARGIN;
+    const inner = p.w - 2 * MARGIN;
+    let y = p.h / 2 - MARGIN;
+    for (const ids of rows) {
+      const wts = ids.map((id) => (id === 'slot' ? 2.4 : id.startsWith('slot:') ? 0.6 : 1));
+      const unit = (inner - (ids.length - 1) * GAP) / wts.reduce((a, b) => a + b, 0);
+      let x = left;
+      ids.forEach((id, k) => {
+        const w = unit * wts[k];
+        this.addUi(p, id, id === 'slot' ? 'label' : 'button', 0, x + w / 2, y - rh / 2, w, rh);
+        x += w + GAP;
+      });
+      y -= rh + GAP;
     }
-    this.page = Math.min(this.page, this.pageCount() - 1);
-    this.showTab(this.tab, this.page);
-    this.selectColor(this.color);
+  }
+
+  /**
+   * Wrist menu: open while the left palm faces up (hands: from the joints; controllers: the
+   * controller rolled palm-up), floating just above the wrist and facing you. Docked by the
+   * shelf and always open on the desktop or when pinned.
+   */
+  private tickWrist(delta: number): void {
+    const obj = this.wrist.entity.object3D!;
+    const docked = this.wristPinned || (this.desktop.enabled && !this.renderer.xr.isPresenting);
+    if (docked) {
+      obj.visible = true;
+      obj.scale.setScalar(1);
+      this.wristOpen = 1;
+      return;
+    }
+    const h = this.hands[0];
+    const head = this.player.head.getWorldPosition(this.v5);
+    const at = this.v6.copy(h.mode === 'hand' ? h.point : h.rayOrigin);
+    const up = h.palm.dot(this.up);
+    const near = at.distanceTo(head) < 0.75;
+    const busy = !!(h.pieces || h.frame || h.box || h.camera || h.spin || h.swing);
+    const want = h.mode !== 'none' && near && !busy && up > (this.wristOpen > 0.5 ? 0.3 : 0.6);
+    this.wristOpen = Math.max(0, Math.min(1, this.wristOpen + (want ? delta : -delta) / 0.15));
+    obj.visible = this.wristOpen > 0.02;
+    if (!obj.visible) return;
+    // Above the wrist, nudged toward your eyes, facing you.
+    const toHead = this.v3.copy(head).sub(at).normalize();
+    obj.position.copy(at).addScaledVector(this.up, 0.1).addScaledVector(toHead, 0.04);
+    obj.lookAt(head);
+    obj.scale.setScalar(0.4 + 0.6 * this.wristOpen);
+    obj.updateMatrixWorld(true);
+  }
+
+  // ---- parts shelf
+
+  /** Face k's cubby contents in order: minifig presets (as −1 − preset), then parts by tab. */
+  private faceEntries(k: number): number[] {
+    let out = this.faceEntryCache.get(k);
+    if (!out) {
+      out = [];
+      for (const tab of FACES[k].tabs) {
+        if (tab === 'Minifigs') this.lib.minifigs.presets.forEach((_, i) => out!.push(-1 - i));
+        else this.lib.parts.forEach((p, i) => p.tab === tab && out!.push(i));
+      }
+      this.faceEntryCache.set(k, out);
+    }
+    return out;
+  }
+
+  private facePages(k: number): number {
+    return Math.max(1, Math.ceil(this.faceEntries(k).length / PER_FACE));
+  }
+
+  /** What's in cubby `slot` of face k on its current page: a part (≥ 0), a figure (< −0), or null. */
+  private cubbyEntry(k: number, slot: number): number | null {
+    return this.faceEntries(k)[this.facePage[k] * PER_FACE + slot] ?? null;
+  }
+
+  /** Put face k's parts in its cubbies (shown only on faces turned toward you). */
+  private fillFace(k: number): void {
+    const face = this.drum.faces[k];
+    const show = Math.abs(this.drum.faceAngle(k)) < 1.75;
+    const names: string[] = [];
+    face.previews.forEach((mesh, slot) => {
+      const entry = this.cubbyEntry(k, slot);
+      if (entry === null) {
+        mesh.visible = false;
+        names.push('');
+        return;
+      }
+      const fig = entry < 0 ? -1 - entry : -1;
+      const part = fig >= 0 ? (this.lib.byId.get('973c01') ?? 0) : entry;
+      const def = this.lib.parts[part];
+      mesh.geometry = this.lib.geometries[part];
+      const extent = Math.max(def.w * dims.pitch, def.d * dims.pitch, def.h * dims.unit);
+      mesh.scale.setScalar(Math.min(3, CUBBY_FIT / extent));
+      mesh.material = this.matFor(this.finish, fig >= 0 ? this.colorOf(this.lib.minifigs.presets[fig].torso) : this.color);
+      mesh.quaternion.setFromEuler(this.euler.set(0.45, -0.6, 0, 'XYZ'));
+      mesh.visible = show;
+      names.push(fig >= 0 ? this.lib.minifigs.presets[fig].name : this.shortName(def.name));
+    });
+    this.drum.drawFace(k, names, this.facePage[k], this.facePages(k), Math.abs(this.drum.faceAngle(k)) < 0.4);
+  }
+
+  /** Every face, jar and sample tile in the current color and finish. */
+  private fillPartsShelf(): void {
+    for (let k = 0; k < FACES.length; k++) this.fillFace(k);
+    this.shelfFront = this.drum.frontFace();
+    for (const jar of this.drum.jars) {
+      jar.paint.material = this.matFor(0, jar.color);
+      const on = jar.color === this.color;
+      jar.ring.visible = on;
+      jar.group.position.y = 0.024 + (on ? 0.008 : 0);
+    }
+    for (const t of this.drum.tiles) {
+      t.brick.material = this.matFor(t.finish, this.color);
+      t.group.position.y = 0.024 + (t.finish === this.finish ? 0.008 : 0);
+      t.brick.scale.setScalar(1.4);
+    }
+  }
+
+  /** Each frame: ease the drum to its face (ticking past faces), refresh what's shown, turn the hovered part. */
+  private tickShelf(delta: number): void {
+    const d = this.drum;
+    if (!this.hands.some((h) => h.spin)) d.angle += (d.target - d.angle) * (1 - Math.exp(-delta * 12));
+    d.drum.rotation.y = d.angle;
+    const tick = Math.round(d.angle / FACE_STEP);
+    if (tick !== this.shelfSpinTick) {
+      this.shelfSpinTick = tick;
+      this.tick(0.15);
+      this.uiTick();
+    }
+    if (d.frontFace() !== this.shelfFront) {
+      this.shelfFront = d.frontFace();
+      for (let k = 0; k < FACES.length; k++) this.fillFace(k);
+    }
+    const hovered = this.hands.map((h) => (h.target?.kind === 'cell' && h.target.cubby ? (h.target.obj as Mesh) : null)).find((m) => m) ?? null;
+    if (d.hover && d.hover !== hovered) d.hover.quaternion.setFromEuler(this.euler.set(0.45, -0.6, 0, 'XYZ'));
+    d.hover = hovered;
+    if (hovered) hovered.rotateOnWorldAxis(this.up, delta * 1.2);
+  }
+
+  /** Angle of a world point around the drum's axis (the same sense faces are laid out in). */
+  private drumAngleOf(p: Vector3): number {
+    const lo = this.drum.root.worldToLocal(this.v3.copy(p));
+    return Math.atan2(lo.x, lo.z);
+  }
+
+  private spinDrum(h: HandState): void {
+    const a = this.drumAngleOf(this.grabPoint(h));
+    let da = a - h.spin!.a0;
+    da = Math.atan2(Math.sin(da), Math.cos(da));
+    this.drum.angle = h.spin!.drum0 + da;
+    this.drum.target = this.drum.angle;
+  }
+
+  private releaseSpin(h: HandState): void {
+    h.spin = null;
+    h.holdButton = null;
+    this.drum.target = Math.round(this.drum.angle / FACE_STEP) * FACE_STEP;
+  }
+
+  /** A jar, sample tile, page arrow or side sign: pressed by a grab, a ray press, or a touch. */
+  private pressProp(prop: { type: PropKind; value: number }): void {
+    switch (prop.type) {
+      case 'jar':
+        this.selectColor(prop.value);
+        if (this.selection.size) this.recolor([...this.selection], prop.value);
+        try {
+          this.beep(520, 0, 0.06, 'sine', 0.06);
+          this.beep(780, 0.04, 0.05, 'sine', 0.04);
+        } catch {
+          // audio is best-effort
+        }
+        break;
+      case 'tile':
+        this.finish = prop.value;
+        this.visualDirty = true;
+        if (this.selection.size) for (const rec of [...this.selection]) this.recolor([rec], rec.color, prop.value);
+        this.fillPartsShelf();
+        this.uiTick();
+        break;
+      case 'prev':
+      case 'next': {
+        const k = prop.value;
+        const page = this.facePage[k] + (prop.type === 'next' ? 1 : -1);
+        if (page < 0 || page >= this.facePages(k)) return;
+        this.facePage[k] = page;
+        this.fillFace(k);
+        this.uiTick();
+        break;
+      }
+      case 'face':
+        this.drum.target = this.drum.angle - this.drum.faceAngle(prop.value);
+        break;
+    }
+    this.tick(0.25);
+  }
+
+  /** Fingertip (or controller tip) dipped into a jar, or touching a tile, arrow or sign. */
+  private touchShelf(h: HandState): void {
+    const tip = h.mode === 'hand' ? (h.hasTip ? h.indexTip : null) : h.mode === 'controller' ? h.point : null;
+    let key: string | null = null;
+    let prop: { type: PropKind; value: number } | null = null;
+    if (tip && this.drum.root.visible) {
+      for (const jar of this.drum.jars) {
+        const lo = jar.group.worldToLocal(this.v3.copy(tip));
+        if (Math.hypot(lo.x, lo.z) < JAR_R + 0.004 && lo.y > -0.002 && lo.y < JAR_H + 0.006) {
+          key = `jar:${jar.color}`;
+          prop = { type: 'jar', value: jar.color };
+          break;
+        }
+      }
+      if (!key) {
+        for (const t of this.drum.tiles) {
+          const lo = t.group.worldToLocal(this.v3.copy(tip));
+          if (Math.abs(lo.x) < 0.02 && Math.abs(lo.z) < 0.02 && lo.y > 0 && lo.y < 0.03) {
+            key = `tile:${t.finish}`;
+            prop = { type: 'tile', value: t.finish };
+            break;
+          }
+        }
+      }
+      if (!key && h.mode === 'hand') {
+        const k = this.drum.frontFace();
+        const f = this.drum.faces[k];
+        for (const [obj, type] of [[f.prev, 'prev'], [f.next, 'next']] as const) {
+          const lo = obj.worldToLocal(this.v3.copy(tip));
+          if (Math.abs(lo.x) < 0.02 && Math.abs(lo.y) < 0.012 && Math.abs(lo.z) < 0.008) {
+            key = `${type}:${k}`;
+            prop = { type, value: k };
+          }
+        }
+      }
+    }
+    if (key !== h.dip) {
+      h.dip = key;
+      if (prop) this.pressProp(prop);
+    }
+  }
+
+  /** Shelf targets: cubbies and paging on the faces toward you, side signs, caps (spin), jars, tiles, the handle. */
+  private shelfTargets(h: HandState, far: boolean, limit: number, best: Target | null): Target | null {
+    const d = this.drum;
+    if (!d.root.visible) return best;
+    const sb = this.probeObject(h, d.bar, 0.05, 0.011, 0.011, far);
+    if (sb < limit) best = this.consider(best, { kind: 'bar', frame: 'drum', obj: d.bar, score: sb });
+    for (let k = 0; k < FACES.length; k++) {
+      const turn = Math.abs(d.faceAngle(k));
+      const face = d.faces[k];
+      if (turn < 0.6) {
+        for (let slot = 0; slot < PER_FACE; slot++) {
+          if (this.cubbyEntry(k, slot) === null) continue;
+          const [x, y] = cubbyCenter(slot);
+          const sc = this.probeLocal(h, face.group, x, y, -0.025, CUBBY_W / 2, CUBBY_H / 2, 0.025, far);
+          if (sc < limit) best = this.consider(best, { kind: 'cell', cubby: { face: k, slot }, obj: face.previews[slot], score: sc });
+        }
+        if (far) {
+          for (const [obj, type] of [[face.prev, 'prev'], [face.next, 'next']] as const) {
+            const sc = this.probeMesh(h, obj, far);
+            if (sc < limit) best = this.consider(best, { kind: 'prop', prop: { type, value: k }, obj, score: sc });
+          }
+        }
+      } else if (turn < 1.6) {
+        const sc = this.probeMesh(h, face.sign, far);
+        if (sc < limit) best = this.consider(best, { kind: 'prop', prop: { type: 'face', value: k }, obj: face.sign, score: sc });
+      }
+    }
+    for (const cap of d.caps) {
+      const sc = this.probeCap(h, cap, far);
+      if (sc < limit) best = this.consider(best, { kind: 'spin', obj: cap, score: sc + 0.004 });
+    }
+    if (far) {
+      for (const jar of d.jars) {
+        const sc = this.probeLocal(h, jar.group, 0, JAR_H / 2, 0, JAR_R + 0.002, JAR_H / 2, JAR_R + 0.002, far);
+        if (sc < limit) best = this.consider(best, { kind: 'prop', prop: { type: 'jar', value: jar.color }, obj: jar.paint, score: sc });
+      }
+      for (const t of d.tiles) {
+        const sc = this.probeLocal(h, t.group, 0, 0.014, 0, 0.018, 0.012, 0.018, far);
+        if (sc < limit) best = this.consider(best, { kind: 'prop', prop: { type: 'tile', value: t.finish }, obj: t.brick, score: sc });
+      }
+    }
+    return best;
+  }
+
+  /** A shelf cap as the disc it is (near: distance to it; far: the ray against its inscribed square). */
+  private probeCap(h: HandState, cap: Mesh, far: boolean): number {
+    const bb = cap.geometry.boundingBox ?? (cap.geometry.computeBoundingBox(), cap.geometry.boundingBox!);
+    const r = bb.max.x;
+    const half = (bb.max.y - bb.min.y) / 2;
+    if (far) return this.probeLocal(h, cap, 0, 0, 0, r * 0.7, half, r * 0.7, true);
+    cap.updateWorldMatrix(true, false);
+    const lo = this.v2.copy(h.point).applyMatrix4(this.m1.copy(cap.matrixWorld).invert());
+    const out = Math.max(0, Math.hypot(lo.x, lo.z) - r * 0.9);
+    return Math.hypot(out, Math.max(0, Math.abs(lo.y) - half));
+  }
+
+  /** Probe a mesh by its own geometry's bounding box. */
+  private probeMesh(h: HandState, m: Mesh, far: boolean): number {
+    const bb = m.geometry.boundingBox ?? (m.geometry.computeBoundingBox(), m.geometry.boundingBox!);
+    const c = bb.getCenter(this.v5);
+    return this.probeLocal(h, m, c.x, c.y, c.z, (bb.max.x - bb.min.x) / 2, (bb.max.y - bb.min.y) / 2, (bb.max.z - bb.min.z) / 2, far);
+  }
+
+  /** Like probeObject, for a box given in an object's local frame (center and half extents, unscaled). */
+  private probeLocal(h: HandState, obj: Object3D, cx: number, cy: number, cz: number, hx: number, hy: number, hz: number, far: boolean): number {
+    obj.updateWorldMatrix(true, false);
+    this.m1.copy(obj.matrixWorld).invert();
+    if (!far) {
+      const lo = this.v2.copy(h.point).applyMatrix4(this.m1);
+      return this.boxDist(lo.set(lo.x - cx, lo.y - cy, lo.z - cz), hx, hy, hz);
+    }
+    const o = this.v2.copy(h.rayOrigin).applyMatrix4(this.m1);
+    o.set(o.x - cx, o.y - cy, o.z - cz);
+    const dir = this.v4.copy(h.rayDir).transformDirection(this.m1);
+    return this.rayBox(o, dir, hx, hy, hz);
+  }
+
+  /** Where the parts in the front face's cubbies are (world), for tests and probes. */
+  shelfPreviews(): number[][] {
+    const k = this.drum.frontFace();
+    return this.drum.faces[k].previews.map((m) => m.getWorldPosition(new Vector3()).toArray());
   }
 
   /** Settings rows: stats, app buttons, look presets and size — plus, under Advanced, environment, tone and sliders. */
-  private settingsRows(): Array<[kind: 'stats' | 'head' | 'row', ids: string[]]> {
-    const rows: Array<['stats' | 'head' | 'row', string[]]> = [
+  private settingsRows(): Array<[kind: 'stats' | 'head' | 'row' | 'ctl', ids: string[]]> {
+    const rows: Array<['stats' | 'head' | 'row' | 'ctl', string[]]> = [
       ['stats', ['stats']],
       ['row', ['recenter', 'instructions', 'clear']],
       ['head', ['head:look']],
     ];
     for (let k = 0; k < STYLES.length; k += 3) rows.push(['row', STYLES.slice(k, k + 3).map((_, j) => `style:${k + j}`)]);
-    rows.push(['row', ['slider:size', 'advanced']]);
-    if (!this.advanced) return rows;
+    rows.push(['row', ['slider:size', 'advanced', 'controls']]);
+    if (this.controlsOpen) CONTROLS.forEach((_, i) => rows.push(['ctl', [`ctl:${i}`]]));
+    if (!this.advanced) return [...rows, ['ctl', ['credits']]];
     rows.push(['head', ['head:env']], ['row', ENVS.map((e) => `env:${e.id}`)], ['row', ['tone', 'reset', 'hz', 'stress']], ['head', ['head:tune']]);
     const tune = SLIDERS.filter((d) => d.id !== 'size');
     for (let k = 0; k < tune.length; k += 2) rows.push(['row', tune.slice(k, k + 2).map((d) => `slider:${d.id}`)]);
+    rows.push(['ctl', ['credits']]);
     return rows;
   }
 
   private rowHeight(kind: string, ids: string[]): number {
     if (kind === 'stats') return 0.035;
     if (kind === 'head') return 0.016;
+    if (kind === 'ctl') return 0.017;
     return ids.some((id) => id.startsWith('slider:')) ? 0.026 : 0.024;
   }
 
@@ -1388,6 +1662,10 @@ export class StackerSystem extends createSystem({}) {
       ids.forEach((id, k) => {
         const x = kind === 'row' ? left + w / 2 + k * (w + GAP) : 0;
         const itemKind = kind === 'row' ? (id.startsWith('slider:') ? 'slider' : 'button') : 'label';
+        if (kind === 'ctl') {
+          this.addUi(p, id, 'label', 0, 0, y - rh / 2, inner, rh);
+          return;
+        }
         this.addUi(p, id, itemKind, 0, x, y - rh / 2, kind === 'row' ? w : inner, rh);
       });
       y -= rh + GAP;
@@ -1398,97 +1676,13 @@ export class StackerSystem extends createSystem({}) {
     this.drawStats();
   }
 
-  private tabName(): string {
-    return TAB_NAMES[this.tab];
-  }
-
-  private tabPartsCache = new Map<string, number[]>();
-  private tabParts(): number[] {
-    const name = this.tabName();
-    let out = this.tabPartsCache.get(name);
-    if (!out) {
-      out = [];
-      this.lib.parts.forEach((p, i) => {
-        if (p.tab === name) out!.push(i);
-      });
-      this.tabPartsCache.set(name, out);
-    }
-    return out;
-  }
-
-  private pageCount(): number {
-    const name = this.tabName();
-    if (name === 'Kits' || name === 'Saves' || name === 'Minifigs') return 1;
-    return Math.max(1, Math.ceil(this.tabParts().length / this.cellsPerPage));
-  }
-
-  private cellPart(cell: number): number {
-    const name = this.tabName();
-    if (name === 'Kits' || name === 'Saves') return -1;
-    if (name === 'Minifigs') return cell < this.lib.minifigs.presets.length ? (this.lib.byId.get('973c01') ?? -1) : -1;
-    return this.tabParts()[this.page * this.cellsPerPage + cell] ?? -1;
-  }
-
-  private cellActive(cell: number): boolean {
-    const name = this.tabName();
-    if (name === 'Kits') return cell < KITS.length;
-    if (name === 'Saves') return cell < SLOTS;
-    return this.cellPart(cell) >= 0;
-  }
-
-  private cellItems: UiItem[] = [];
-  private cellItemsOf: UiItem[] | null = null;
-  private cells(): UiItem[] {
-    if (this.cellItemsOf !== this.library.items) {
-      this.cellItemsOf = this.library.items;
-      this.cellItems = this.library.items.filter((u) => u.kind === 'cell');
-    }
-    return this.cellItems;
-  }
-
-  private showTab(tab: number, page = 0): void {
-    this.tab = tab;
-    this.page = page;
-    const figs = this.tabName() === 'Minifigs';
-    for (const item of this.cells()) {
-      const mesh = item.preview!;
-      const part = this.cellPart(item.value);
-      mesh.visible = part >= 0;
-      if (part < 0) continue;
-      const def = this.lib.parts[part];
-      mesh.geometry = this.lib.geometries[part];
-      const extent = Math.max(def.w * dims.pitch, def.d * dims.pitch, def.h * dims.unit);
-      mesh.scale.setScalar(Math.min(4, PREVIEW_FIT / extent));
-      mesh.material = this.matFor(this.finish, figs ? this.colorOf(this.lib.minifigs.presets[item.value].torso) : this.color);
-    }
-    for (const item of this.library.items) if (item.kind !== 'swatch') this.drawUi(item);
-  }
-
   private colorOf(code: number): number {
     return this.lib.colorIndex.get(code) ?? 0;
   }
 
   private selectColor(k: number): void {
     this.color = k;
-    if (this.tabName() !== 'Minifigs') for (const c of this.cells()) c.preview!.material = this.matFor(this.finish, k);
-    for (const item of this.library.items) if (item.kind === 'finish') item.preview!.material = this.matFor(item.value, k);
-    for (const item of this.library.items) {
-      if (!item.slot) continue;
-      const on = item.value === k;
-      const [im, n] = item.slot;
-      const sc = on ? 1.3 : item.hover ? 1.15 : 1;
-      this.m1.makeScale(sc, sc, sc).setPosition(item.x, item.y, on ? 0.009 : 0.004);
-      im.setMatrixAt(n, this.m1);
-      im.instanceMatrix.needsUpdate = true;
-    }
-  }
-
-  private spinPreviews(delta: number): void {
-    for (const c of this.cells()) {
-      const p = c.preview!;
-      p.userData.spin = (p.userData.spin ?? 0) + delta * 0.5;
-      p.quaternion.setFromEuler(this.euler.set(0.55, p.userData.spin, 0, 'XYZ'));
-    }
+    this.fillPartsShelf();
   }
 
   private shortName(name: string): string {
@@ -1538,6 +1732,24 @@ export class StackerSystem extends createSystem({}) {
         return 'Paint';
       case 'deselect':
         return this.selection.size ? `Deselect ${this.selection.size}` : 'Deselect';
+      case 'slot:prev':
+        return '◀';
+      case 'slot:next':
+        return '▶';
+      case 'slot':
+        return this.slotInfo(this.slot);
+      case 'save':
+        return 'Save';
+      case 'load':
+        return 'Load';
+      case 'kit:exit':
+        return 'Exit kit';
+      case 'kit:restart':
+        return '↺ Restart';
+      case 'kit:skip':
+        return 'Skip ▶';
+      case 'controls':
+        return this.controlsOpen ? 'Controls ▾' : 'Controls ▸';
       case 'credits':
         return 'Parts: LDraw.org (CC BY 4.0) · Catalog: Rebrickable · Kits: LDraw OMR';
       case 'man:prev':
@@ -1558,46 +1770,16 @@ export class StackerSystem extends createSystem({}) {
       const v = this.sliderValue(def.id);
       return `${def.label} ${def.fmt ? def.fmt(v) : v.toFixed(2)}`;
     }
-    const name = this.tabName();
-    if (item.id.startsWith('row:')) {
-      const side = item.id.slice(4);
-      if (name === 'Saves') return side === 'left' ? 'Save' : side === 'right' ? 'Load' : `Slot ${this.slot + 1}`;
-      if (name === 'Kits') {
-        if (!this.kit) return side === 'mid' ? 'Pick a kit' : '';
-        if (side === 'left') return 'Exit kit';
-        if (side === 'right') return 'Skip ▶';
-        return '↺ Restart step';
-      }
-      if (name === 'Minifigs') return side === 'mid' ? 'Grab a figure' : '';
-      if (side === 'left') return this.page > 0 ? '◀' : '';
-      if (side === 'right') return this.page < this.pageCount() - 1 ? '▶' : '';
-      return `${name} ${this.page + 1}/${this.pageCount()}`;
-    }
-    if (item.kind === 'tab') return TAB_NAMES[item.value];
-    if (item.kind === 'finish') return FINISHES[item.value].label;
     if (item.id.startsWith('style:')) return STYLES[Number(item.id.slice(6))].name;
     if (item.id.startsWith('env:')) return ENVS.find((e) => e.id === item.id.slice(4))!.label;
-    if (item.kind === 'cell') {
-      if (name === 'Kits') {
-        if (!KITS[item.value]) return '';
-        return this.isArmed(item.id) ? 'Tap again · clears your build' : `${KITS[item.value].title} · ${KITS[item.value].pieces} pcs`;
-      }
-      if (name === 'Saves') return item.value < SLOTS ? this.slotInfo(item.value) : '';
-      if (name === 'Minifigs') return this.lib.minifigs.presets[item.value]?.name ?? '';
-      const part = this.cellPart(item.value);
-      return part >= 0 ? this.shortName(this.lib.parts[part].name) : '';
-    }
+    if (item.id.startsWith('ctl:')) return CONTROLS[Number(item.id.slice(4))].join('\t');
     return item.id;
   }
 
   private uiSelected(item: UiItem): boolean {
-    if (item.kind === 'tab') return item.value === this.tab;
-    if (item.kind === 'finish') return item.value === this.finish;
     if (item.id === `style:${this.style}`) return true;
     if (item.id === `env:${this.envId}`) return true;
     if (item.id === `tool:${this.tool}`) return true;
-    if (item.kind === 'cell' && this.tabName() === 'Saves') return item.value === this.slot;
-    if (item.kind === 'cell' && this.tabName() === 'Kits') return this.kit?.id === KITS[item.value]?.id;
     return false;
   }
 
@@ -1608,7 +1790,7 @@ export class StackerSystem extends createSystem({}) {
     const selected = this.uiSelected(item);
     // Skip the canvas draw and texture upload when nothing it shows has changed.
     const sig = `${label}|${selected}|${item.hover}|${this.uiDisabled(item)}|${this.isArmed(item.id)}|${
-      item.kind === 'cell' ? `${this.cellActive(item.value)}${this.tabName()}` : item.kind === 'slider' ? this.sliderValue(item.id.slice(7)) : ''
+      item.kind === 'slider' ? this.sliderValue(item.id.slice(7)) : ''
     }`;
     if (sig === item.sig) return;
     item.sig = sig;
@@ -1638,21 +1820,23 @@ export class StackerSystem extends createSystem({}) {
       ctx.arc(tx0 + (tx1 - tx0) * f, height / 2, height * 0.28, 0, Math.PI * 2);
       ctx.fillStyle = '#ffffff';
       ctx.fill();
-    } else if (item.kind === 'cell') {
-      if (!this.cellActive(item.value)) {
-        item.tex.needsUpdate = true;
-        return;
+    } else if (item.id.startsWith('ctl:')) {
+      // Controls list: action on the left, how on the right (a heading when there's no "how").
+      const [what, how] = label.split('\t');
+      ctx.textBaseline = 'middle';
+      if (!how) {
+        ctx.fillStyle = '#e2e8f0';
+        ctx.font = `700 ${Math.round(height * 0.6)}px system-ui, sans-serif`;
+        ctx.textAlign = 'left';
+        ctx.fillText(what, 4, height / 2 + 2);
+      } else {
+        ctx.fillStyle = '#98a2b5';
+        ctx.font = `600 ${Math.round(height * 0.52)}px system-ui, sans-serif`;
+        ctx.textAlign = 'left';
+        ctx.fillText(what, 4, height / 2 + 2, width * 0.36);
+        ctx.fillStyle = '#ffffff';
+        ctx.fillText(how, width * 0.38, height / 2 + 2, width * 0.62 - 4);
       }
-      const textOnly = this.tabName() === 'Kits' || this.tabName() === 'Saves';
-      ctx.fillStyle = selected ? '#2f4a86' : item.hover ? '#34405a' : '#252b39';
-      ctx.beginPath();
-      ctx.roundRect(4, 4, width - 8, height - 8, 18);
-      ctx.fill();
-      ctx.fillStyle = textOnly ? '#ffffff' : '#aab4c8';
-      ctx.font = `600 ${Math.round(height * (textOnly ? 0.16 : 0.12))}px system-ui, sans-serif`;
-      ctx.textAlign = 'center';
-      ctx.textBaseline = textOnly ? 'middle' : 'bottom';
-      ctx.fillText(label, width / 2, textOnly ? height / 2 : height - 12, width - 16);
     } else {
       if (!label) {
         item.tex.needsUpdate = true;
@@ -1666,13 +1850,12 @@ export class StackerSystem extends createSystem({}) {
         ctx.roundRect(3, 3, width - 6, height - 6, height * 0.3);
         ctx.fill();
       }
-      ctx.fillStyle = off ? '#5b6475' : passive && item.id === 'credits' ? '#7c8699' : passive ? '#8b95a8' : '#ffffff';
+      ctx.fillStyle = off ? '#5b6475' : passive && item.id === 'slot' ? '#e2e8f0' : passive ? '#8b95a8' : '#ffffff';
       const heading = passive && item.id.startsWith('head:');
-      ctx.font = `${heading ? 700 : 600} ${Math.round(height * (item.id === 'credits' ? 0.6 : heading ? 0.6 : 0.42))}px system-ui, sans-serif`;
-      ctx.textAlign = item.kind === 'finish' || heading ? 'left' : 'center';
+      ctx.font = `${heading ? 700 : 600} ${Math.round(height * (heading ? 0.6 : 0.42))}px system-ui, sans-serif`;
+      ctx.textAlign = heading ? 'left' : 'center';
       ctx.textBaseline = 'middle';
-      // Finish chips leave room on the left for their material sphere.
-      const x = item.kind === 'finish' ? height * 1.15 : heading ? 4 : width / 2;
+      const x = heading ? 4 : width / 2;
       ctx.fillText(label, x, height / 2 + 2, width - x - 6);
     }
     item.tex.needsUpdate = true;
@@ -1703,32 +1886,20 @@ export class StackerSystem extends createSystem({}) {
   }
 
   private redrawUi(filter?: (u: UiItem) => boolean): void {
-    for (const p of this.panels) for (const item of p.items) if (item.kind !== 'swatch' && (!filter || filter(item))) this.drawUi(item);
+    for (const p of this.panels) for (const item of p.items) if (!filter || filter(item)) this.drawUi(item);
   }
 
   private setUiHover(item: UiItem, hover: boolean): void {
     if (item.hover === hover) return;
     item.hover = hover;
-    if (item.kind === 'swatch') this.selectColor(this.color);
-    else this.drawUi(item);
+    this.drawUi(item);
   }
 
   private pressUi(item: UiItem, h?: HandState): void {
     if (h && h.mode !== 'controller' && item.kind !== 'label') this.uiTick();
     if (item.kind === 'label') return;
     this.tick(0.25);
-    if (item.kind === 'tab') this.showTab(item.value);
-    else if (item.kind === 'finish') {
-      this.finish = item.value;
-      this.visualDirty = true;
-      if (this.selection.size) for (const rec of [...this.selection]) this.recolor([rec], rec.color, item.value);
-      for (const c of this.cells()) if (c.preview && this.tabName() !== 'Minifigs') c.preview.material = this.matFor(this.finish, this.color);
-      this.redrawUi((u) => u.kind === 'finish');
-    } else if (item.kind === 'swatch') {
-      this.selectColor(item.value);
-      if (this.selection.size) this.recolor([...this.selection], item.value);
-    } else if (item.kind === 'cell') this.pressCell(item.value);
-    else this.onButton(item.id);
+    this.onButton(item.id);
   }
 
   private slideTo(item: UiItem, lx: number): void {
@@ -1739,24 +1910,6 @@ export class StackerSystem extends createSystem({}) {
     this.setSlider(def.id, def.min + t * (def.max - def.min));
   }
 
-  private pressCell(cell: number): void {
-    const name = this.tabName();
-    if (name === 'Kits' && KITS[cell]) {
-      // Starting a kit clears the plate: ask first if there's a build on it.
-      if (this.placedRecs.length && !this.kit && !this.confirm(`cell:${cell}`)) this.redrawUi((u) => u.kind === 'cell');
-      else void this.startKit(KITS[cell].id, KITS[cell].title);
-    }
-    else if (name === 'Saves' && cell < SLOTS) {
-      this.slot = cell;
-      this.redrawUi();
-    } else if (name === 'Minifigs') {
-      this.figurePieces(cell, this.frontSpot(new Vector3()));
-    } else {
-      const part = this.cellPart(cell);
-      if (part >= 0) this.spawnLoose(part, this.color, this.frontSpot(new Vector3()), this.root.object3D!.quaternion);
-    }
-  }
-
   private frontSpot(out: Vector3): Vector3 {
     const P = dims.pitch;
     const { x0, x1, z1 } = this.bounds;
@@ -1764,7 +1917,6 @@ export class StackerSystem extends createSystem({}) {
   }
 
   private onButton(id: string): void {
-    const name = this.tabName();
     switch (id) {
       case 'hz': {
         const session = this.renderer.xr.getSession();
@@ -1829,18 +1981,28 @@ export class StackerSystem extends createSystem({}) {
       case 'deselect':
         this.selection.clear();
         break;
-      case 'row:left':
-        if (name === 'Saves') this.saveSlot();
-        else if (name === 'Kits') this.exitKit();
-        else if (this.page > 0) this.showTab(this.tab, this.page - 1);
+      case 'slot:prev':
+      case 'slot:next':
+        this.slot = (this.slot + (id === 'slot:next' ? 1 : SLOTS - 1)) % SLOTS;
         break;
-      case 'row:mid':
-        if (name === 'Kits') this.restartStep();
+      case 'save':
+        this.saveSlot();
         break;
-      case 'row:right':
-        if (name === 'Saves') this.loadSlot();
-        else if (name === 'Kits') this.skipStep();
-        else if (this.page < this.pageCount() - 1) this.showTab(this.tab, this.page + 1);
+      case 'load':
+        this.loadSlot();
+        break;
+      case 'kit:exit':
+        this.exitKit();
+        break;
+      case 'kit:restart':
+        this.restartStep();
+        break;
+      case 'kit:skip':
+        this.skipStep();
+        break;
+      case 'controls':
+        this.controlsOpen = !this.controlsOpen;
+        this.layoutSettings();
         break;
       case 'man:prev':
         if (this.kit && this.kit.page > 0) this.showPage(this.kit.page - 1);
@@ -2578,6 +2740,9 @@ export class StackerSystem extends createSystem({}) {
       holdButton: null,
       held: new Set(),
       camera: false,
+      spin: null,
+      dip: null,
+      palm: new Vector3(0, -1, 0),
       pulling: false,
       pullFrom: 0,
       pullClicked: false,
@@ -2656,6 +2821,8 @@ export class StackerSystem extends createSystem({}) {
     if (mode === 'controller') {
       h.quat.copy(this.q1);
       h.point.copy(h.rayOrigin).addScaledVector(h.rayDir, CTRL_TIP);
+      // Gripping a controller, the palm faces the controller's inner side: +X for the left hand.
+      h.palm.set(h.hand === 'left' ? 1 : -1, 0, 0).applyQuaternion(this.q1);
       const pad = this.input.xr.gamepads[h.hand];
       if (!pad) return;
       for (const [btn, id] of PAD_BUTTONS[h.hand]) {
@@ -2676,6 +2843,13 @@ export class StackerSystem extends createSystem({}) {
         !this.jointPos(frame, ref, source.hand, 'wrist', this.v4, h.quat)
       ) {
         return;
+      }
+      // Palm normal from the knuckles: (index − wrist) × (pinky − wrist), signed by hand.
+      if (this.jointPos(frame, ref, source.hand, 'index-finger-metacarpal', this.v5) && this.jointPos(frame, ref, source.hand, 'pinky-finger-metacarpal', this.v6)) {
+        this.v5.sub(this.v4);
+        this.v6.sub(this.v4);
+        h.palm.crossVectors(this.v5, this.v6).normalize();
+        if (h.hand === 'left') h.palm.negate();
       }
       h.indexTip.copy(index);
       h.hasTip = true;
@@ -2780,14 +2954,16 @@ export class StackerSystem extends createSystem({}) {
 
   /** Desktop carry: sit the held block on whatever is under the cursor — a placed block or the plate. */
   private mouseDrop(h: HandState, part: number, out: Vector3): Vector3 {
-    // Over the library: follow the cursor onto the panel, where letting go removes the block.
-    const lib = this.library.entity.object3D!;
-    const ll = lib.worldToLocal(this.v4.copy(h.rayOrigin));
-    const ld = this.v2.copy(h.rayDir).applyQuaternion(lib.getWorldQuaternion(this.q2).invert());
+    // Over the shelf: follow the cursor onto it, where letting go removes the block.
+    const shelf = this.drum.root;
+    const ll = shelf.worldToLocal(this.v4.copy(h.rayOrigin));
+    const ld = this.v2.copy(h.rayDir).applyQuaternion(shelf.getWorldQuaternion(this.q2).invert());
     let tLib = Infinity;
-    if (ld.z < -1e-4 && ll.z > 0) {
-      const tl = -ll.z / ld.z;
-      if (Math.abs(ll.x + ld.x * tl) < this.library.w / 2 && Math.abs(ll.y + ld.y * tl) < this.library.h / 2) tLib = tl;
+    for (let tl = 0; tl < 3; tl += 0.01) {
+      if (this.drum.contains(ll.x + ld.x * tl, ll.y + ld.y * tl, ll.z + ld.z * tl)) {
+        tLib = tl;
+        break;
+      }
     }
     const r = this.root.object3D!;
     const P = dims.pitch;
@@ -2807,7 +2983,7 @@ export class StackerSystem extends createSystem({}) {
       this.v2.copy(d).transformDirection(rec.mi!);
       t = Math.min(t, this.rayBox(this.v4, this.v2, this.v3.x, this.v3.y, this.v3.z));
     }
-    if (tLib < t * this.scale) return out.copy(h.rayOrigin).addScaledVector(h.rayDir, tLib - 0.01);
+    if (tLib < t * this.scale) return out.copy(h.rayOrigin).addScaledVector(h.rayDir, tLib + 0.01);
     if (t === Infinity) return out.copy(h.rayOrigin).addScaledVector(h.rayDir, 0.4);
     out.copy(o).addScaledVector(d, t);
     out.y += this.halfExtents(part, this.v3).y + 0.001;
@@ -2864,6 +3040,9 @@ export class StackerSystem extends createSystem({}) {
     } else if (h.tear) {
       if (released) this.releaseTear(h);
       else this.pullTear(h);
+    } else if (h.spin) {
+      if (released) this.releaseSpin(h);
+      else this.spinDrum(h);
     } else if (h.camera) {
       if (released) this.releaseCamera(h);
       else this.carryCamera(h, delta);
@@ -2883,6 +3062,7 @@ export class StackerSystem extends createSystem({}) {
     } else {
       if (h.mode !== 'hand' || h.closing <= 0) this.findTarget(h);
       this.poke(h);
+      this.touchShelf(h);
       if (h.painting) {
         if (released) {
           h.painting = false;
@@ -3022,9 +3202,13 @@ export class StackerSystem extends createSystem({}) {
       if (sc < limit) best = this.consider(best, { kind: 'box', box: b, obj: b.mesh, score: sc });
     }
 
+    if (this.drum) best = this.shelfTargets(h, far, limit, best);
     for (const p of this.panels) {
-      const sc = this.probeObject(h, p.bar, 0.05, 0.011, 0.011, far);
-      if (sc < limit) best = this.consider(best, { kind: 'bar', frame: p.id, obj: p.bar, score: sc });
+      if (!p.entity.object3D!.visible) continue;
+      if (p.bar.visible) {
+        const sc = this.probeObject(h, p.bar, 0.05, 0.011, 0.011, far);
+        if (sc < limit) best = this.consider(best, { kind: 'bar', frame: p.id, obj: p.bar, score: sc });
+      }
       if (p.resize) {
         const rs = this.probeObject(h, p.resize, 0.012, 0.012, 0.012, far);
         if (rs < limit) best = this.consider(best, { kind: 'resize', frame: p.id, obj: p.resize, score: rs });
@@ -3056,11 +3240,7 @@ export class StackerSystem extends createSystem({}) {
       for (const item of p.items) {
         if (item.kind === 'label') continue;
         if (Math.abs(px - item.x) > item.w / 2 || Math.abs(py - item.y) > item.h / 2) continue;
-        if (item.kind === 'cell') {
-          if (!this.cellActive(item.value)) continue;
-          if (this.cellPart(item.value) >= 0) best = this.consider(best, { kind: 'cell', ui: item, obj: item.preview, score });
-          else if (far) best = this.consider(best, { kind: 'ui', ui: item, score });
-        } else if (far) best = this.consider(best, { kind: 'ui', ui: item, score });
+        if (far) best = this.consider(best, { kind: 'ui', ui: item, score });
       }
     }
 
@@ -3149,6 +3329,7 @@ export class StackerSystem extends createSystem({}) {
   private poke(h: HandState): void {
     if (!h.hasTip) return;
     for (const p of this.panels) {
+      if (!p.entity.object3D!.visible) continue;
       const lo = p.entity.object3D!.worldToLocal(this.v1.copy(h.indexTip));
       if (Math.abs(lo.x) > p.w / 2 || Math.abs(lo.y) > p.h / 2 || lo.z > 0.05 || lo.z < -0.03) continue;
       if (lo.z > 0.006) h.pokeArmed = true;
@@ -3165,7 +3346,6 @@ export class StackerSystem extends createSystem({}) {
       if (!h.pokeArmed || lo.z > 0.004 || lo.z < -0.02) return;
       for (const item of p.items) {
         if (item.kind === 'label') continue;
-        if (item.kind === 'cell' && (this.cellPart(item.value) >= 0 || !this.cellActive(item.value))) continue;
         if (Math.abs(lo.x - item.x) <= item.w / 2 && Math.abs(lo.y - item.y) <= item.h / 2) {
           h.pokeLatched = true;
           h.pokeArmed = false;
@@ -3227,17 +3407,26 @@ export class StackerSystem extends createSystem({}) {
         this.startTear(h, btn, t.box!);
         return;
       case 'cell': {
-        const item = t.ui!;
-        item.preview!.getWorldPosition(this.v1);
-        if (this.tabName() === 'Minifigs') {
+        // A part from the shelf: it comes out of its cubby full size, into your hand.
+        const { face, slot } = t.cubby!;
+        const entry = this.cubbyEntry(face, slot);
+        if (entry === null) return;
+        (t.obj as Mesh).getWorldPosition(this.v1);
+        if (entry < 0) {
           h.fromSelection = false;
-          this.startHold(h, btn, this.figurePieces(item.value, this.v1.clone()), true);
-        } else {
-          const part = this.cellPart(item.value);
-          this.holdLoose(h, btn, [this.spawnLoose(part, this.color, this.v1, this.root.object3D!.quaternion)], true);
-        }
+          this.startHold(h, btn, this.figurePieces(-1 - entry, this.v1.clone()), true);
+        } else this.holdLoose(h, btn, [this.spawnLoose(entry, this.color, this.v1, this.root.object3D!.quaternion)], true);
         return;
       }
+      case 'spin':
+        h.holdButton = btn;
+        h.anchorDist = h.mode !== 'hand' && h.targetFar ? t.score : -1;
+        h.spin = { a0: this.drumAngleOf(this.grabPoint(h)), drum0: this.drum.angle };
+        this.tick(0.3);
+        return;
+      case 'prop':
+        this.pressProp(t.prop!);
+        return;
       case 'placed': {
         const group = this.selection.has(t.placed!) && this.selection.size > 1 ? [...this.selection] : [t.placed!];
         // Hinged parts (hinges, turntables, doors, panes, shutters) — and whatever is built
@@ -3310,6 +3499,7 @@ export class StackerSystem extends createSystem({}) {
     if (frame === 'platform') return this.root.object3D!;
     if (frame === 'shelf') return this.shelf!.object3D!;
     if (frame === 'rack') return this.rack!.object3D!;
+    if (frame === 'drum') return this.drum.root;
     return this.panels.find((p) => p.id === frame)!.entity.object3D!;
   }
 
@@ -3783,10 +3973,13 @@ export class StackerSystem extends createSystem({}) {
   }
 
   /** Is this point on the library panel, where letting go of a block removes it? */
+  /** Over the parts shelf, where letting go of a block (or one of your boxes) removes it. */
   private overLibrary(pos: Vector3): boolean {
-    const lo = this.library.entity.object3D!.worldToLocal(this.v1.copy(pos));
-    return Math.abs(lo.x) < this.library.w / 2 + 0.02 && Math.abs(lo.y) < this.library.h / 2 + 0.02 && lo.z > -0.03 && lo.z < 0.06;
+    if (!this.drum?.root.visible) return false;
+    const lo = this.drum.root.worldToLocal(this.v1.copy(pos));
+    return this.drum.contains(lo.x, lo.y, lo.z);
   }
+
 
   private dropPieces(h: HandState): void {
     h.overTrash = false;
@@ -3830,7 +4023,6 @@ export class StackerSystem extends createSystem({}) {
     obj.position.copy(h.resizeAnchor).add(this.v4.set(w / 2, -hh / 2, 0).applyQuaternion(this.q1));
     obj.updateMatrixWorld(true);
     this.sizePanel(p);
-    this.layoutLibrary();
     this.pulse(h.hand, 0.1, 6);
   }
 
@@ -3994,7 +4186,7 @@ export class StackerSystem extends createSystem({}) {
     const t = h.target;
     // Pinch ring: sits between thumb and index, shrinks as they close, fills blue on pinch.
     const ring = h.pinchRing;
-    const busy = !!(h.pieces || h.frame || h.slider || h.box || h.tear || h.swing || h.pulling || h.camera);
+    const busy = !!(h.pieces || h.frame || h.slider || h.box || h.tear || h.swing || h.pulling || h.camera || h.spin);
     ring.visible = h.mode === 'hand' && !busy && h.pinchGap < 0.07;
     if (ring.visible) {
       ring.position.copy(h.point);
@@ -4016,7 +4208,7 @@ export class StackerSystem extends createSystem({}) {
         obj.getWorldQuaternion(h.outline.quaternion);
         obj.getWorldScale(h.outline.scale);
         h.outline.geometry = obj.geometry;
-        h.outline.scale.multiplyScalar(t.kind === 'loose' || t.kind === 'cell' ? 1.08 : t.kind === 'box' ? 1.04 : 1.3);
+        h.outline.scale.multiplyScalar(t.kind === 'loose' || t.kind === 'cell' || t.kind === 'prop' ? 1.08 : t.kind === 'box' ? 1.04 : t.kind === 'spin' ? 1.02 : 1.3);
       }
       // B/Y held: the outline turns selection-cyan (trigger selects instead of grabbing).
       const selecting = h.mode === 'controller' && h.held.has('b') && !h.pieces;
@@ -4119,7 +4311,7 @@ export class StackerSystem extends createSystem({}) {
     };
     this.buildShelf();
     this.syncRack();
-    this.showTab(TAB_NAMES.indexOf('Kits'));
+    this.layoutWrist();
     this.beginStep();
     this.applyInstructions();
   }
@@ -4239,6 +4431,7 @@ export class StackerSystem extends createSystem({}) {
     this.kit = null;
     this.applyInstructions();
     this.syncRack();
+    this.layoutWrist();
   }
 
   private finishKit(): void {
@@ -4246,6 +4439,7 @@ export class StackerSystem extends createSystem({}) {
     this.kit = null;
     this.syncRack();
     this.applyInstructions();
+    this.layoutWrist();
     this.redrawUi();
   }
 
@@ -5099,7 +5293,6 @@ export class StackerSystem extends createSystem({}) {
       v: 4,
       scale: this.scale,
       bounds: this.bounds,
-      library: { w: this.library.w, h: this.library.h },
       blocks: this.placedRecs.map((r) => [
         this.lib.parts[r.part].id,
         this.lib.colors[r.color].code,
@@ -5124,12 +5317,6 @@ export class StackerSystem extends createSystem({}) {
     if (d.scale) this.scale = d.scale;
     this.root.object3D!.scale.setScalar(this.scale);
     this.updatePlate();
-    if (d.library && (d.library.w !== this.library.w || d.library.h !== this.library.h)) {
-      this.library.w = d.library.w;
-      this.library.h = d.library.h;
-      this.sizePanel(this.library);
-      this.layoutLibrary();
-    }
     for (const row of d.blocks) {
       const [id, code] = row as [string, number];
       const part = this.lib.byId.get(id);

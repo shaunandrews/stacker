@@ -1,6 +1,6 @@
 # Stacker docs
 
-Stacker is a mixed-reality brick-building app for Meta Quest 3, built for the browser with WebXR. A platform floats in your room, a library panel holds real brick parts, and you build with your hands or controllers. Kits guide you through official models step by step.
+Stacker is a mixed-reality brick-building app for Meta Quest 3, built for the browser with WebXR. A platform floats in your room, a spinning parts shelf holds real brick parts, and you build with your hands or controllers. Kits guide you through official models step by step.
 
 **Live build:** <https://stacker.view.fast/> (Spacefast space `spc_faf94500d20b4e979a35db4ede374b64`). **Code:** [`app/`](../app). **Data tools:** [`tools/`](../tools).
 
@@ -29,7 +29,7 @@ Working prototype, tested in the IWSDK Quest 3 emulator and by hand on device:
 - Connector snapping: studs and sockets in any orientation, free rotation, joint pairs (hinges, turntables, window glass, panes, shutters)
 - Hinges, turntables, doors, window panes and shutters swing after placing, carrying whatever is built on them
 - Build / Select / Paint tools, duplicate, delete, group moves
-- Movable, tiltable, resizable platform; movable, resizable library with 3 materials (plastic, wood, clear)
+- Movable, tiltable, resizable platform (turn and scale it with two hands); a six-sided **parts shelf** of cubbies you spin, paint jars for colors and sample tiles for the 3 finishes; a **wrist menu** (palm up) for tools, undo and saves
 - Settings panel: 6 look presets up front; environments, tone, Hz, Stress and fine-tune sliders (including Occlusion and Resolution) under Advanced
 - Rendering: 1.3× resolution, real HDRI environments, baked + contact ambient occlusion, plastic micro-surface, a winking-smiley stud logo
 - Splash screen with loading progress; **desktop view** (mouse + keyboard) for exploring and testing without a headset

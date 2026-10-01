@@ -52,8 +52,9 @@ Python regression tests (`dev/tests/`, using the `iw.py` helpers — `probe()`, 
 ```bash
 python3 dev/tests/test_build_tools.py       # grab, duplicate, select, group move, recolor, paint, delete, save/load
 python3 dev/tests/test_kits.py              # shelf, ghost magnet, ghost restore, restart, shelf move, free parts, completion
-python3 dev/tests/test_panels_guidance.py   # library resize, presets, Advanced, sliders, guide line, rough drop, manual paging
-python3 dev/tests/test_desktop.py           # splash, desktop drag/place, Alt-duplicate, undo/redo, select, delete, library drop, orbit
+python3 dev/tests/test_panels_guidance.py   # presets, Advanced, sliders, guide line, rough drop, manual paging
+python3 dev/tests/test_shelf.py             # parts shelf: spin, signs, paging, jars, tiles, delete; wrist menu; Controls list
+python3 dev/tests/test_desktop.py           # splash, desktop drag/place, Alt-duplicate, undo/redo, select, delete, shelf drop, orbit
 python3 dev/tests/test_boxes.py             # kit rack: grab a box, float, B returns it, tear the strip, kit starts, rack returns
 python3 dev/tests/test_hinges.py            # hinge + brick swing to the stop, window panes/shutters, turntable, pull-off
 python3 dev/tests/house_shots.py <prefix> [style]  # before/after render shots of a finished House (not a test)
@@ -117,7 +118,7 @@ The HDRI environments come from Poly Haven (`https://dl.polyhaven.org/file/ph-as
 ## Licensing
 
 - **Stacker's code:** GPL-3.0-or-later (`LICENSE`).
-- **LDraw parts:** CC BY 4.0 (some older parts CCAL 2.0). Attribution is shown on the library panel and in `app/public/CREDITS.txt`.
+- **LDraw parts:** CC BY 4.0 (some older parts CCAL 2.0). Attribution is shown on the splash screen, at the bottom of Settings, and in `app/public/CREDITS.txt`.
 - **OMR models** (kits): CCAL 2.0, credited per model.
 - **Rebrickable data:** used as reference for part selection; not redistributed.
 - **LEGO®** is a trademark of the LEGO Group, which doesn't sponsor or endorse this project. The geometry and kits are recognizably LEGO. Fine for a personal prototype; **get a trademark/design review before any public or store release.**

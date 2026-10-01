@@ -15,11 +15,11 @@ cli('browser', 'reload'); time.sleep(6)
 ok('splash offers both ways in', js('return !document.getElementById("splash").classList.contains("hidden") && document.getElementById("splash").classList.contains("ready")'))
 js('document.getElementById("enter-desktop").click(); return 1'); time.sleep(1)
 ok('desktop mode on, splash hidden', js('return s.desktop.enabled && document.getElementById("splash").classList.contains("hidden")'))
-js('s.library.w = 0.32; s.library.h = 0.52; s.sizePanel(s.library); s.layoutLibrary(); const r = s.root.object3D; s.placeDefault(r.position.clone(), s.yawOf(r.quaternion)); s.frameCamera(); s.exitKit(); s.clearPlaced(); s.showTab(0); return 1')
+js('const r = s.root.object3D; s.placeDefault(r.position.clone(), s.yawOf(r.quaternion)); s.frameCamera(); s.exitKit(); s.clearPlaced(); s.facePage[0] = 0; s.drum.angle = s.drum.target = 0; s.fillPartsShelf(); return 1')
 time.sleep(0.5)
 
-# 1. drag a part from the library onto the plate
-cells = js(PROJ + 'return s.cells().map(c => px(c.preview.getWorldPosition(new s.v1.constructor())))')
+# 1. drag a part from the shelf onto the plate
+cells = js(PROJ + 'return s.shelfPreviews().map((p) => px(new s.v1.constructor(...p)))')
 cell = [c for c in cells if 0 < c[0] < 800 and 0 < c[1] < 800][0]
 plate = px('s.plateCenter(new s.v1.constructor())')
 mouse([['move', cell[0], cell[1]], ['wait', 150], ['down'], ['move', plate[0], plate[1], 20], ['wait', 250]])
@@ -43,11 +43,11 @@ ok('Shift-click selects', state()['sel'] == 1, state())
 mouse([['key', 'Delete'], ['wait', 400]]); s4 = state(); ok('Delete removes', s4['placed'] == 1, s4)
 mouse([['key', 'Control+z'], ['wait', 200]]); ok('undo brings it back', state()['placed'] == 2, state())
 
-# 5. dragging onto the library removes
-b = placed_px(0); lib = px('s.library.entity.object3D.getWorldPosition(new s.v1.constructor())')
+# 5. dragging onto the shelf removes
+b = placed_px(0); lib = px('s.drum.drum.getWorldPosition(new s.v1.constructor())')
 mouse([['move', b[0], b[1]], ['wait', 150], ['down'], ['move', lib[0], lib[1], 15], ['wait', 250]])
-ok('library turns red under a held block', js('return s.library.bg.material.color.getHex() !== 0x1b1f29'))
-mouse([['up'], ['wait', 400]]); ok('dropping on the library removes', state()['placed'] == 1, state())
+ok('shelf turns red under a held block', js('return s.drum.frameMat.color.getHex() !== 0xf1f2f4'))
+mouse([['up'], ['wait', 400]]); ok('dropping on the shelf removes', state()['placed'] == 1, state())
 
 # 6. orbit + zoom move the camera; F frames it again
 c0 = js('return s.camera.position.toArray()')
