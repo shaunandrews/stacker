@@ -1,6 +1,6 @@
 # 11 · Desktop play & cross-device multiplayer (plan)
 
-Status: **Phase 1 (desktop) shipped**; phases 2–4 in progress. The goal: keyboard and mouse play that feels native rather than "VR with a cursor", and then online rooms where people on computers and in headsets build on the same plate together. Desktop comes first, built so its actions can go over the network later.
+Status: **Phases 1 (desktop) and 2 (edits and players) shipped**; 3–4 in progress. The goal: keyboard and mouse play that feels native rather than "VR with a cursor", and then online rooms where people on computers and in headsets build on the same plate together. Desktop comes first, built so its actions can go over the network later.
 
 ## What we want
 
@@ -69,24 +69,25 @@ The HUD is HTML and CSS layered over the WebGL canvas, hidden in XR. That gives 
 - **Kit panel:** the manual page (`ManualPainter`, the same renderer the headset and the catalog use) in a right-hand panel with ◀ ▶; the step's remaining pieces fill the hotbar
 - **Settings:** the existing settings, plus a Controls sheet for desktop
 
-### Under the hood: actions, not input
+### Under the hood: edits, not input (shipped)
 
-Today input handling and edits are tangled in `StackerSystem`. Before multiplayer, every edit becomes an **action** with a player id:
+Instead of instrumenting every way the build can change, Stacker already waits for an edit to **settle** (nothing held or animating) before recording undo. At that moment it diffs the build against the last settled state, keyed by **stable block ids** (`edits.ts`):
 
 ```ts
-type Action =
-  | { t: 'place'; player: string; blocks: PlacedSpec[] }
-  | { t: 'move'; player: string; ids: string[]; to: PlacedSpec[] }
-  | { t: 'delete'; player: string; ids: string[] }
-  | { t: 'recolor'; player: string; ids: string[]; color: number; finish?: number }
-  | { t: 'grab' | 'release'; player: string; ids: string[] }   // locks, for "first grab wins"
-  | { t: 'kit'; player: string; op: 'start' | 'page' | 'exit'; kit?: string; step?: number };
+type Spec = string; // "part id|color code|finish id|16 matrix values" (platform-local meters)
+interface Edit {
+  set: Array<[id: string, from: Spec | null, to: Spec | null]>; // per block: before → after (null: absent)
+  bounds?: [from: Bounds, to: Bounds];                          // plate resized
+}
 ```
 
-- VR hands, the mouse and (later) remote players all produce actions; one function applies them to the build
-- Placed blocks get stable ids, so actions can name them across machines
-- Undo becomes per player: each player's stack holds the inverses of their own actions
-- Solo play is unaffected; this is the seam multiplayer plugs into
+- Every placed block has an id `${playerId}.${n}`, made where it's created (`makeRec`), kept through recolors and undo
+- `settleUndo` computes the edit, pushes it on your undo stack (outside kits) and hands it to `onEdit`, the hook multiplayer listens on
+- **Undo is per player:** it applies the inverse of your own last edit by id; blocks someone else has since removed are skipped. Undo and redo go out through `onEdit` too
+- `applyRemote(edit)` applies someone else's edit by id and folds it into the settled state, so it never lands in your undo or gets echoed back
+- `buildState()` / `loadBuildState()` move the whole build with its ids (a room's join snapshot)
+- A kit is still one undo step: the build from before it (`kitBase`) diffed against the build after it
+- Grabbing isn't an edit until it settles; "first grab wins" is a separate, immediate lock message (Phase 4)
 
 ## Multiplayer: what to research
 

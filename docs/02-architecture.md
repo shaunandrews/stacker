@@ -43,6 +43,8 @@ stacker/
     │   ├── kits.ts         ← KITS list, kit block format, kit piece → matrix
     │   ├── manual.ts       ← ManualPainter: draws manual pages (the headset and the catalog)
     │   ├── shelf.ts        ← the parts shelf: six-sided drum of cubbies, paint jars, sample tiles
+    │   ├── hud.ts          ← the desktop HUD (parts drawer, hotbar, swatches, kit panel)
+    │   ├── edits.ts        ← settled edits by block id: undo steps and multiplayer messages
     │   ├── snap-camera.ts  ← the box camera on the kit rack
     │   ├── lamp.ts         ← the pull-cord lamp
     │   ├── catalog/        ← the catalog page's views, audit checks and viewers

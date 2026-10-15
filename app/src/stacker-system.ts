@@ -47,6 +47,8 @@ import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeom
 import { dims, isSymmetric, Library, studGeometry, TABS } from './blocks.js';
 import { DesktopControls } from './desktop.js';
 import { Hud } from './hud.js';
+import { applyToMap, diff, invert, isEmpty } from './edits.js';
+import type { Edit, Spec } from './edits.js';
 import type { HudState } from './hud.js';
 import { Materials, Thumbnailer } from './catalog/render.js';
 import { ArtRenderer, KitBox, TEAR_PULL } from './kit-boxes.js';
@@ -236,6 +238,7 @@ interface Placement {
 }
 
 interface Placed extends Placement {
+  id: string; // stable across undo and between players: `${player}.${n}`
   part: number;
   color: number;
   finish: number;
@@ -593,10 +596,18 @@ export class StackerSystem extends createSystem({}) {
   private hands!: HandState[];
   private frameDelta = 0;
   // Undo: snapshots of the placed blocks and plate, taken whenever an edit settles.
-  private undoStack: string[] = [];
-  private redoStack: string[] = [];
-  private stable = ''; // the last settled state
+  // Edits (edits.ts): the build as settled last, by block id; your own edits for undo.
+  readonly playerId = Math.random().toString(36).slice(2, 8);
+  private idSeq = 0;
+  private recById = new Map<string, Placed>();
+  private stableMap = new Map<string, Spec>();
+  private stableBounds = { x0: 0, x1: 0, z0: 0, z1: 0 };
+  private undoStack: Edit[] = [];
+  private redoStack: Edit[] = [];
   private edited = false;
+  /** Every settled edit made here (yours, and your undos), for whoever's listening (multiplayer). */
+  onEdit: ((e: Edit) => void) | null = null;
+  private kitBase: { map: Map<string, Spec>; bounds: { x0: number; x1: number; z0: number; z1: number } } | null = null; // the build before a kit: leaving it is one undo step
   private armed: { id: string; at: number } | null = null; // a destructive button waiting for its confirming tap
   private desktop!: DesktopControls;
   private dirty = false;
@@ -757,8 +768,7 @@ export class StackerSystem extends createSystem({}) {
       this.placeDefault(new Vector3(0, 0.8, -0.5), 0);
       const saved = this.readStore('stacker.autosave');
       if (saved) this.deserialize(saved);
-      this.stable = this.snapshot();
-      this.edited = false;
+      this.resetStable();
       this.buildRack();
       this.lamp = new PullLamp();
       this.lamp.setGlow(this.dimNow);
@@ -2352,6 +2362,7 @@ export class StackerSystem extends createSystem({}) {
     this.writeInstance(batch, rec);
     this.indexConns(rec, true);
     this.placedRecs.push(rec);
+    this.recById.set(rec.id, rec);
     this.editGen++;
     this.dirty = this.shadowDirty = this.edited = true;
   }
@@ -2370,6 +2381,7 @@ export class StackerSystem extends createSystem({}) {
     this.indexConns(rec, false);
     const k = this.placedRecs.indexOf(rec);
     if (k >= 0) this.placedRecs.splice(k, 1);
+    if (this.recById.get(rec.id) === rec) this.recById.delete(rec.id);
     this.selection.delete(rec);
     this.dirty = this.shadowDirty = this.edited = true;
     const m = this.kit?.matched.get(rec);
@@ -2393,6 +2405,7 @@ export class StackerSystem extends createSystem({}) {
     this.connIndex.clear();
     this.recConns.clear();
     this.placedRecs = [];
+    this.recById.clear();
     this.selection.clear();
     this.editGen++;
     // Blocks still animating into place would land after the clear.
@@ -2428,8 +2441,8 @@ export class StackerSystem extends createSystem({}) {
     return e;
   }
 
-  private makeRec(part: number, color: number, m: Matrix4, target?: Placed, finish = 0): Placed {
-    return { part, color, finish, m, target, slot: -1, batch: '' };
+  private makeRec(part: number, color: number, m: Matrix4, target?: Placed, finish = 0, id = `${this.playerId}.${++this.idSeq}`): Placed {
+    return { id, part, color, finish, m, target, slot: -1, batch: '' };
   }
 
   /** Transform for a block on the stud grid: cell (i, j), height in half plates, quarter turns. */
@@ -4581,6 +4594,7 @@ export class StackerSystem extends createSystem({}) {
   private async startKit(id: string, title: string): Promise<void> {
     const data = { steps: await this.kitSteps(id) };
     this.exitKit();
+    this.kitBase ??= { map: new Map(this.stableMap), bounds: { ...this.stableBounds } };
     this.clearPlaced();
     const all = data.steps.flat();
     const xs: number[] = [];
@@ -4787,6 +4801,7 @@ export class StackerSystem extends createSystem({}) {
     this.applyInstructions();
     this.syncRack();
     this.layoutWrist();
+    this.kitUndoStep();
   }
 
   private finishKit(): void {
@@ -4795,7 +4810,27 @@ export class StackerSystem extends createSystem({}) {
     this.syncRack();
     this.applyInstructions();
     this.layoutWrist();
+    this.kitUndoStep();
     this.redrawUi();
+  }
+
+  /** A kit ended: everything since it started becomes one undo step. */
+  private kitUndoStep(): void {
+    const base = this.kitBase;
+    this.kitBase = null;
+    if (!base) return;
+    // Anything not yet settled goes out to the others first, then the whole kit is one step.
+    const now = this.stateMap();
+    const pending = diff(this.stableMap, now, this.stableBounds, this.bounds);
+    this.stableMap = now;
+    this.stableBounds = { ...this.bounds };
+    this.edited = false;
+    if (!isEmpty(pending)) this.onEdit?.(pending);
+    const e = diff(base.map, now, base.bounds, this.bounds);
+    if (isEmpty(e)) return;
+    this.undoStack.push(e);
+    if (this.undoStack.length > 50) this.undoStack.shift();
+    this.redoStack.length = 0;
   }
 
   /** Ghosts on the platform, a paged manual, or both. */
@@ -5618,48 +5653,124 @@ export class StackerSystem extends createSystem({}) {
 
   // ================================================================ undo
 
-  private snapshot(): string {
-    return JSON.stringify({ bounds: this.bounds, blocks: (this.serialize() as { blocks: unknown[] }).blocks });
-  }
-
   private busy(): boolean {
     if (this.snaps.length) return true;
     for (const h of this.hands) if (h.pieces || h.painting || h.corner >= 0 || h.slider || h.swing) return true;
     return false;
   }
 
-  /** Once an edit settles (nothing held or animating), remember the state from before it. */
-  private settleUndo(): void {
-    if (!this.edited || this.kit || this.busy()) return;
+  /** A placed block as a portable string (see Spec). */
+  private specOf(rec: Placed): Spec {
+    return `${this.lib.parts[rec.part].id}|${this.lib.colors[rec.color].code}|${FINISHES[rec.finish].id}|${rec.m.elements.map((v) => Math.round(v * 1e5) / 1e5).join(',')}`;
+  }
+
+  private recFromSpec(id: string, spec: Spec): Placed | null {
+    const [pid, code, fin, m] = spec.split('|');
+    const part = this.lib.byId.get(pid);
+    if (part === undefined) return null;
+    return this.makeRec(part, this.colorOf(Number(code)), new Matrix4().fromArray(m.split(',').map(Number)), undefined, finishIndex(fin), id);
+  }
+
+  private stateMap(): Map<string, Spec> {
+    return new Map(this.placedRecs.map((r) => [r.id, this.specOf(r)]));
+  }
+
+  /** Take the build as it is now as settled (after loading, or joining a room). */
+  private resetStable(): void {
+    this.stableMap = this.stateMap();
+    this.stableBounds = { ...this.bounds };
     this.edited = false;
-    const now = this.snapshot();
-    if (now === this.stable) return;
-    this.undoStack.push(this.stable);
-    if (this.undoStack.length > 50) this.undoStack.shift();
-    this.redoStack.length = 0;
-    this.stable = now;
+  }
+
+  /**
+   * Once an edit settles (nothing held or animating), what changed since the last settled
+   * moment becomes one edit: an undo step (outside kits) and a message for other players.
+   */
+  private settleUndo(): void {
+    if (!this.edited || this.busy()) return;
+    this.edited = false;
+    const now = this.stateMap();
+    const e = diff(this.stableMap, now, this.stableBounds, this.bounds);
+    if (isEmpty(e)) return;
+    this.stableMap = now;
+    this.stableBounds = { ...this.bounds };
+    if (!this.kit) {
+      this.undoStack.push(e);
+      if (this.undoStack.length > 50) this.undoStack.shift();
+      this.redoStack.length = 0;
+    }
+    this.onEdit?.(e);
     this.redrawUi((u) => u.id === 'undo' || u.id === 'redo');
   }
 
+  /** Undo takes back only your own edits; blocks someone else has since moved or removed are skipped. */
   private undo(): void {
     if (this.kit || this.busy() || !this.undoStack.length) return;
-    this.redoStack.push(this.stable);
-    this.restore(this.undoStack.pop()!);
+    const e = this.undoStack.pop()!;
+    this.redoStack.push(e);
+    this.applyLocal(invert(e));
   }
 
   private redo(): void {
     if (this.kit || this.busy() || !this.redoStack.length) return;
-    this.undoStack.push(this.stable);
-    this.restore(this.redoStack.pop()!);
+    const e = this.redoStack.pop()!;
+    this.undoStack.push(e);
+    this.applyLocal(e);
   }
 
-  private restore(state: string): void {
-    this.stable = state;
-    this.deserialize({ v: 4, ...JSON.parse(state) });
+  /** Apply an undo or redo here and tell the others, without making it a new undo step. */
+  private applyLocal(e: Edit): void {
+    this.applyEdit(e);
+    applyToMap(this.stableMap, e);
+    if (e.bounds) this.stableBounds = { ...e.bounds[1] };
     this.edited = false;
+    this.onEdit?.(e);
     this.aimKeyLight();
     this.tick(0.2);
     this.redrawUi((u) => u.id === 'undo' || u.id === 'redo' || u.id === 'deselect');
+  }
+
+  /** Someone else's edit: applied by id, kept out of your undo, and folded into the settled state. */
+  applyRemote(e: Edit): void {
+    this.applyEdit(e);
+    applyToMap(this.stableMap, e);
+    if (e.bounds) this.stableBounds = { ...e.bounds[1] };
+  }
+
+  /** Make the build match an edit's "to" side, block by block. */
+  private applyEdit(e: Edit): void {
+    for (const [id, , to] of e.set) {
+      const rec = this.recById.get(id);
+      if (rec) this.removePlaced(rec);
+      if (to === null) continue;
+      const next = this.recFromSpec(id, to);
+      if (!next) continue;
+      this.addPlaced(next);
+      this.kitCheck(next);
+    }
+    if (e.bounds) {
+      this.bounds = { ...e.bounds[1] };
+      this.updatePlate();
+    }
+  }
+
+  /** The whole build with its ids (a room's join snapshot). */
+  buildState(): { bounds: { x0: number; x1: number; z0: number; z1: number }; blocks: Array<[string, Spec]> } {
+    return { bounds: { ...this.bounds }, blocks: this.placedRecs.map((r) => [r.id, this.specOf(r)]) };
+  }
+
+  /** Replace the build with a room's snapshot (ids kept) and take it as settled. */
+  loadBuildState(st: { bounds: { x0: number; x1: number; z0: number; z1: number }; blocks: Array<[string, Spec]> }): void {
+    this.clearPlaced();
+    this.bounds = { ...st.bounds };
+    this.updatePlate();
+    for (const [id, spec] of st.blocks) {
+      const rec = this.recFromSpec(id, spec);
+      if (rec) this.addPlaced(rec);
+    }
+    this.undoStack.length = 0;
+    this.redoStack.length = 0;
+    this.resetStable();
   }
 
   private serialize(): object {
