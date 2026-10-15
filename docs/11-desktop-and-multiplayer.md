@@ -1,6 +1,6 @@
 # 11 · Desktop play & cross-device multiplayer (plan)
 
-Status: **Phases 1 (desktop) and 2 (edits and players) shipped**; 3–4 in progress. The goal: keyboard and mouse play that feels native rather than "VR with a cursor", and then online rooms where people on computers and in headsets build on the same plate together. Desktop comes first, built so its actions can go over the network later.
+Status: **Phases 1 (desktop), 2 (edits and players) and 3 (multiplayer spikes) shipped; rooms v1 (Phase 4) shipped without voice and shared kit paging**, which come next. The goal: keyboard and mouse play that feels native rather than "VR with a cursor", and then online rooms where people on computers and in headsets build on the same plate together. Desktop comes first, built so its actions can go over the network later.
 
 ## What we want
 
@@ -89,20 +89,39 @@ interface Edit {
 - A kit is still one undo step: the build from before it (`kitBase`) diffed against the build after it
 - Grabbing isn't an edit until it settles; "first grab wins" is a separate, immediate lock message (Phase 4)
 
-## Multiplayer: what to research
+## Multiplayer: what the spikes found
 
-Every one of these needs a spike before we commit to it.
-
-| Question | Options to test |
+| Question | Answer |
 |---|---|
-| **Transport** on Spacefast | Zero's realtime layer is WebSocket-based, and its config advertises app sockets (`/api/socket/:name`) with no documented server API yet (see [10](10-accounts.md)). Live queries refresh in about 0.4 s: enough for blocks appearing, not for hands moving. Options: ask Spacefast about app sockets; WebRTC data channels between players with Zero passing the connection setup; a Functions worker relay (if it can hold sockets) |
-| **State model** | Host-authoritative (the room's first player applies actions and rebroadcasts; simple, and locks are easy) vs a shared log of actions (CRDT-like, no host). Start with host-authoritative and host migration when the host leaves |
-| **What travels** | Actions (small) for the build; poses at 15–30 Hz for heads, hands, desktop cameras and cursors (interpolated); a full snapshot (the save format, gzipped) when someone joins |
-| **Voice** | WebRTC audio, positioned with Web Audio panners at each player's head or camera. Needs connection setup (the same as for data channels) and a TURN server for players behind strict NATs. Is there one on Spacefast, or do we need a provider? |
-| **Rooms** | Open rooms keyed by a short code or link; a lobby list from Zero (a `rooms` table with a heartbeat). Guests are enough (sign-in is still blocked), with a chosen name and color |
-| **Shared frame** | Everything is already stored in platform-local coordinates. Each player keeps their own platform pose and scale (a VR player's plate on their table, a desktop player's in their view), and remote heads, hands and cursors map through each one's own platform transform |
-| **Kits together** | Kit state (which kit, the step each player is on, done pieces) becomes room state; ghost matching runs where the action is applied |
-| **Persistence** | The room's build saves as a cloud save (once accounts land) or to the host's device |
+| **Transport** on Spacefast | Two lanes. **Edits** go through the Zero capsule (`capsule/server`): mutations into a numbered log per room, delivered by live queries in about half a second. **Poses** go through the realtime relay Zero already runs (Cast, Phoenix channels): every page of a published version shares one presence room, and each visitor's presence carries a `tool` string cut to 64 characters. A pose packs into 48 bytes of base64 (`net/pose.ts`). Measured between two browsers: 20 updates a second, all delivered in order, 64–124 ms (average 80 ms) sender to receiver. App sockets (`/api/socket/:name`) are still undocumented, and the relay's other events (`broadcast` and friends) are refused or crash the channel, so presence is the only fast lane today |
+| **State model** | A shared log, ordered by the server (`pushEdit` hands out numbers in a transaction). Each player applies the log in order, skipping their own edits (already applied). No host is needed for edits; the room's longest-standing player (the host) only folds the log into a snapshot every 60 entries. When the host leaves, the next player in line takes over |
+| **What travels** | Settled edits (`edits.ts`; a burst is merged and sent as one, big ones are split under the 64 KB field limit); poses at up to 20 Hz (head and hands, or camera and cursor, plus the held block); a snapshot plus the log since it when someone joins |
+| **Conflicts** | First grab wins: your pose names the block you're holding (a hash of its id). Others can't pick it up or delete it, and see a ghost of it in your color where you hold it. Two players editing the same block at the same moment is still last-write-wins |
+| **Voice** | Not yet. Plan: WebRTC audio between each pair, the connection setup passed through the capsule's `signals` table (already there), positioned with Web Audio panners at each player's head or camera. TURN is the open question: Spacefast doesn't offer one, so players behind strict NATs may need a provider |
+| **Rooms** | Open rooms keyed by a five-letter code. A `rooms` table with a heartbeat makes the lobby (the HUD's Together panel and the web page `/rooms`). Guests are enough: a chosen name and one of eight colors (stored on the device) |
+| **Shared frame** | Everything travels in platform-local coordinates. Each player keeps their own plate pose and scale, and remote heads, hands and cursors map through each one's own plate. Bodies keep their real-world size |
+| **Persistence** | A room's build lives in the capsule (snapshot plus log). Your own build is put aside when you join and comes back when you leave; nothing from a room is autosaved over it |
+
+## Rooms v1 (shipped)
+
+- **Together** (desktop HUD, top bar): set your name and color, **Start a room with this build** (your build seeds it), join an open room or a code. In a room: the code, **Copy link**, who's here (and who's host), **Leave room**
+- **Links:** `/?room=CODE` joins on load, on a computer or in the headset's browser; `/rooms` lists open rooms
+- **Presence:** VR players show a head (with a visor) and two hands; desktop players a camera marker and a ring cursor on the build; everyone has a name tag in their color
+- **Locks:** first grab wins (above)
+- **Undo** stays per player; kits run locally but their blocks sync like any other edit
+
+How it fits together:
+
+| Piece | Job |
+|---|---|
+| `capsule/server/index.ts` | Tables `rooms`, `edits`, `snaps`, `members`, `signals`; `pushEdit`, `putSnapshot`, `joinRoom`, `heartbeat`, `leaveRoom`; live queries `openRooms`, `roomLog`, `roomMembers`; `GET /api/rooms/snapshot` |
+| `net/zero.ts`, `net/zero-bridge.ts` | Finds the capsule (`/__zero/config`); a hidden Preact tree holds Zero's hooks for plain code. On the dev server there's no capsule, so Together stays hidden |
+| `net/cast.ts` | Joins the relay's presence room with a runtime ticket, sends `presence:update` at most 20 Hz (and every 15 s when idle, or presence lapses after 45 s), rejoins when the relay closes the channel |
+| `net/pose.ts` | The 48-byte pose |
+| `net/room.ts` | The session: join (snapshot + log), send edits, apply others', compact as host, read poses |
+| `net/avatars.ts` | Draws other players and their held blocks |
+
+Known limits: one presence room per published version (everyone on the site shares it; packets carry a room hash and are filtered), so very busy sites would want app sockets; two people on different published versions can't see each other's poses; same-block conflicts are last-write-wins.
 
 ## Plan
 
@@ -115,6 +134,6 @@ Every one of these needs a spike before we commit to it.
 
 **Phase 2: actions and players** (~2–3 days): the action layer, stable block ids, per-player undo, a fake second "player" in tests driving actions.
 
-**Phase 3: multiplayer spikes** (~2–3 days): transport on Spacefast (ask about app sockets; WebRTC with Zero passing the setup), two browsers sharing a plate, poses at 20 Hz, voice between two peers, TURN needs.
+**Phase 3: multiplayer spikes** (done): transport on Spacefast (above), two browsers sharing a plate, poses at 20 Hz.
 
-**Phase 4: rooms v1:** open rooms, presence, first-grab locks, shared kits, voice, join snapshots, host migration.
+**Phase 4: rooms v1:** open rooms, presence, first-grab locks, join snapshots, host hand-off (done); next: spatial voice, shared kit paging, a Together panel in the headset (VR players join by link today).

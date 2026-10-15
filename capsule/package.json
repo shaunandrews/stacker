@@ -1,0 +1,9 @@
+{
+  "name": "stacker-capsule",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@spacefast/zero": "0.5.0",
+    "preact": "10.29.7"
+  }
+}

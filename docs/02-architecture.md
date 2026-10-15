@@ -22,6 +22,7 @@ stacker/
 │   ├── build-colors.py     ← LDraw color table → app/public/parts/colors.json
 │   ├── build-kit.py        ← `collect` kit parts; `build` LDraw model → kit JSON
 │   ├── find-kits.py        ← find small, well-covered sets in the LDraw OMR
+│   ├── stage-site.sh       ← assembles app/dist + capsule/ for publishing
 │   ├── build-parts.mjs     ← LDraw parts → app/public/parts/parts.{json,bin} (bevels, seams, baked AO)
 │   ├── selection.json      ← curated part list (generated, committed)
 │   ├── special-parts.json  ← Special/Windows tab parts and joint mounts (hinges, panes, shutters)
@@ -29,6 +30,7 @@ stacker/
 │   ├── kit-parts.json      ← extra parts/colors the kits need (generated)
 │   ├── kit-edits/          ← step regroupings saved from the catalog (applied by build-kit.py)
 │   └── minifigs.json       ← minifig part overrides, presets, assembly offsets
+├── capsule/                ← the Space's Zero capsule: rooms (tables, mutations, live queries), /rooms page
 ├── data-src/               ← downloads (LDraw library, Rebrickable CSVs, .mpd models) — not in git
 └── app/                    ← the app (an IWSDK project)
     ├── iwsdk.config.json   ← project authority: XR mode, features, scene
@@ -45,6 +47,7 @@ stacker/
     │   ├── shelf.ts        ← the parts shelf: six-sided drum of cubbies, paint jars, sample tiles
     │   ├── hud.ts          ← the desktop HUD (parts drawer, hotbar, swatches, kit panel)
     │   ├── edits.ts        ← settled edits by block id: undo steps and multiplayer messages
+    │   ├── net/            ← rooms (docs/11): Zero bridge, relay presence, pose packets, session, avatars
     │   ├── snap-camera.ts  ← the box camera on the kit rack
     │   ├── lamp.ts         ← the pull-cord lamp
     │   ├── catalog/        ← the catalog page's views, audit checks and viewers

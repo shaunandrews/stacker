@@ -52,3 +52,40 @@ export function applyToMap(map: Map<string, Spec>, e: Edit): void {
     else map.set(id, to);
   }
 }
+
+/** Split an edit whose JSON is too big for one row into independent smaller ones. */
+export function splitEdit(e: Edit, max = 50_000): Edit[] {
+  if (JSON.stringify(e).length <= max) return [e];
+  const out: Edit[] = [];
+  let cur: Edit = e.bounds ? { set: [], bounds: e.bounds } : { set: [] };
+  let size = 40;
+  for (const entry of e.set) {
+    const n = JSON.stringify(entry).length + 1;
+    if (cur.set.length && size + n > max) {
+      out.push(cur);
+      cur = { set: [] };
+      size = 40;
+    }
+    cur.set.push(entry);
+    size += n;
+  }
+  if (cur.set.length || cur.bounds) out.push(cur);
+  return out;
+}
+
+/** Several edits in a row as one (same result applied at once): for sending a burst together. */
+export function mergeEdits(edits: Edit[]): Edit {
+  const byId = new Map<string, [from: Spec | null, to: Spec | null]>();
+  let bounds: [Bounds, Bounds] | undefined;
+  for (const e of edits) {
+    for (const [id, from, to] of e.set) {
+      const cur = byId.get(id);
+      if (cur) cur[1] = to;
+      else byId.set(id, [from, to]);
+    }
+    if (e.bounds) bounds = bounds ? [bounds[0], e.bounds[1]] : [e.bounds[0], e.bounds[1]];
+  }
+  const out: Edit = { set: [...byId].filter(([, [from, to]]) => from !== to).map(([id, [from, to]]) => [id, from, to]) };
+  if (bounds && !sameBounds(bounds[0], bounds[1])) out.bounds = bounds;
+  return out;
+}

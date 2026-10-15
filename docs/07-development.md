@@ -54,6 +54,8 @@ python3 dev/tests/test_build_tools.py       # grab, duplicate, select, group mov
 python3 dev/tests/test_kits.py              # shelf, ghost magnet, ghost restore, restart, shelf move, free parts, completion
 python3 dev/tests/test_panels_guidance.py   # presets, Advanced, sliders, guide line, rough drop, manual paging
 python3 dev/tests/test_shelf.py             # parts shelf: spin, signs, paging, jars, tiles, delete; wrist menu; Controls list
+python3 dev/tests/test_rooms.py             # first grab wins, your pose, other players' bodies
+node --experimental-strip-types dev/unit/net.test.mjs  # pose packets, splitting and merging edits (no browser)
 python3 dev/tests/test_desktop.py           # splash, desktop drag/place, Alt-duplicate, undo/redo, select, delete, shelf drop, orbit
 python3 dev/tests/test_boxes.py             # kit rack: grab a box, float, B returns it, tear the strip, kit starts, rack returns
 python3 dev/tests/test_hinges.py            # hinge + brick swing to the stop, window panes/shutters, turntable, pull-off
@@ -80,10 +82,12 @@ The space is `spc_faf94500d20b4e979a35db4ede374b64` (recorded in `app/.spacefast
 Live at <https://stacker.view.fast/>.
 
 ```bash
-cd app && npm run typecheck && NODE_ENV=production npm run build
-cd dist && rm -f ../../site.zip && zip -qr ../../site.zip . -x "*AGENTS.md" && cd ../..
-sf publish site.zip --space spc_faf94500d20b4e979a35db4ede374b64 --wait --json -y -m "<commit>"
+cd app && npm run typecheck && NODE_ENV=production npm run build && cd ..
+tools/stage-site.sh /tmp/stacker-site      # app/dist + the Zero capsule (capsule/)
+sf publish /tmp/stacker-site --space spc_faf94500d20b4e979a35db4ede374b64 --wait --json -y -m "<commit>"
 ```
+
+The Space runs Stacker's static build at `/` plus the Zero capsule in `capsule/` (rooms, docs/11). Rooms only work there: the dev server has no capsule, so Together stays hidden. `sf dev` can run the capsule locally, but it doesn't serve a plain static app the way the hosted Space does, so test rooms on a Space
 
 The `sf` CLI (`npm install -g spacefast`) keeps its login in the macOS Keychain after a one-time `sf login`, so any session can publish; check with `sf whoami --json`. Don't print the publish output raw — it can contain secret preview links. Never commit tokens. Docs: <https://spacefast.com/docs/cli>. The project skill (`.claude/skills/stacker/SKILL.md`) has the full routine.
 

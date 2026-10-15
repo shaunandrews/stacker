@@ -43,6 +43,27 @@ export interface HudHost {
   command(id: string): void; // undo, redo, deselect, tool:*, kit:*, settings
   startKit(id: string, title: string): void;
   page(canvas: HTMLCanvasElement): void; // draw the kit's current manual page
+  together: HudTogether;
+}
+
+/** Rooms (net/room.ts), as the HUD shows them. */
+export interface HudTogether {
+  available(): Promise<boolean>;
+  view(): {
+    code: string | null;
+    roomName: string;
+    status: string;
+    name: string;
+    color: number;
+    colors: string[];
+    members: Array<{ name: string; color: string; me: boolean; host: boolean }>;
+    list: Array<{ code: string; name: string; players: number }>;
+  };
+  watchList(on: boolean): void;
+  create(name: string): void;
+  join(code: string): void;
+  leave(): void;
+  identity(name: string, color: number): void;
 }
 
 const CSS = `
@@ -107,6 +128,22 @@ const CSS = `
 #play .kit canvas { width: 100%; flex: 1; min-height: 0; object-fit: contain; background: #e9e3d4; }
 #play .kit footer { display: flex; gap: 6px; padding: 8px; align-items: center; }
 #play .kit footer .step { flex: 1; text-align: center; color: var(--muted); }
+#play .room { position: absolute; right: 12px; top: 60px; width: 300px; padding: 12px; display: flex; flex-direction: column; gap: 8px; max-height: 70vh; overflow-y: auto; }
+#play .room[hidden] { display: none; }
+#play .room h4 { margin: 4px 0 0; font-size: 12px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
+#play .room .row { display: flex; gap: 6px; align-items: center; }
+#play .room input { flex: 1; min-width: 0; background: #11141c; border: 1px solid var(--line); border-radius: 9px; padding: 7px 10px; color: inherit; font: inherit; outline: none; }
+#play .room input:focus { border-color: var(--accent); }
+#play .room .dots { display: flex; gap: 5px; }
+#play .room .dots button { width: 20px; height: 20px; padding: 0; border-radius: 50%; border: 2px solid transparent; }
+#play .room .dots button.on { border-color: #fff; }
+#play .room .who { display: flex; gap: 8px; align-items: center; padding: 4px 2px; }
+#play .room .who i { width: 10px; height: 10px; border-radius: 50%; flex: none; }
+#play .room .who small, #play .room .empty { color: var(--muted); }
+#play .room .code { font: 700 22px/1 ui-monospace, monospace; letter-spacing: 0.12em; }
+#play .room .wide { width: 100%; }
+#play .room .status { color: #fbbf24; min-height: 1em; }
+#play .top .inroom { box-shadow: 0 0 0 1px #22c55e inset; }
 #play .marquee { position: absolute; border: 1.5px solid #22d3ee; background: rgb(34 211 238 / 0.12); border-radius: 3px; display: none; }
 #play .toast { position: absolute; left: 50%; bottom: 96px; transform: translateX(-50%); padding: 6px 12px; border-radius: 999px; background: rgb(21 24 33 / 0.92); border: 1px solid var(--line); color: #e2e8f0; opacity: 0; transition: opacity 0.2s; }
 #play .toast.on { opacity: 1; }
@@ -160,6 +197,8 @@ export class Hud {
   private status: El;
   private menu: El;
   private keys: El;
+  private roomEl: El;
+  private roomBtn: HTMLButtonElement;
   private kitEl: El;
   private kitTitle: El;
   private kitStep: El;
@@ -255,8 +294,19 @@ export class Hud {
     help.onclick = () => {
       this.keys.hidden = !this.keys.hidden;
       this.menu.hidden = true;
+      this.showRoom(false);
     };
-    top.append(this.undoBtn, this.redoBtn, kitsBtn, settingsBtn, help);
+    this.roomBtn = el('button', '', 'Together');
+    this.roomBtn.title = 'Build with other people';
+    this.roomBtn.hidden = true;
+    this.roomBtn.onclick = () => this.showRoom(this.roomEl.hidden);
+    void host.together.available().then((ok) => {
+      this.roomBtn.hidden = !ok;
+      if (ok) this.roomChanged();
+    });
+    top.append(this.undoBtn, this.redoBtn, kitsBtn, this.roomBtn, settingsBtn, help);
+    this.roomEl = el('div', 'box room');
+    this.roomEl.hidden = true;
     this.menu = el('div', 'box menu');
     this.menu.hidden = true;
     this.keys = el('div', 'box keys');
@@ -293,7 +343,7 @@ export class Hud {
 
     this.marqueeEl = el('div', 'marquee');
     this.toastEl = el('div', 'toast');
-    this.root.append(this.drawer, this.opener, bottom, top, this.menu, this.keys, this.kitEl, this.marqueeEl, this.toastEl);
+    this.root.append(this.drawer, this.opener, bottom, top, this.menu, this.keys, this.roomEl, this.kitEl, this.marqueeEl, this.toastEl);
     document.body.appendChild(this.root);
     this.drawTabs();
     this.drawGrid();
@@ -410,10 +460,130 @@ export class Hud {
     this.opener.hidden = open;
   }
 
+  /** Rooms changed (joined, left, someone came or went, the lobby list): redraw. */
+  roomChanged(): void {
+    const v = this.host.together.view();
+    this.roomBtn.textContent = v.code ? `Together · ${v.members.length || 1}` : 'Together';
+    this.roomBtn.classList.toggle('inroom', !!v.code);
+    if (this.roomEl.hidden) return;
+    // Don't rebuild under someone typing their name or a code.
+    const typing = this.roomEl.contains(document.activeElement) && document.activeElement instanceof HTMLInputElement;
+    const inRoom = !!this.roomEl.querySelector('.code');
+    if (typing && inRoom === !!v.code) this.drawRoomLists();
+    else this.drawRoom();
+  }
+
+  private showRoom(on: boolean): void {
+    this.roomEl.hidden = !on;
+    this.host.together.watchList(on);
+    if (!on) return;
+    this.menu.hidden = this.keys.hidden = true;
+    this.drawRoom();
+  }
+
+  private roomLists: El | null = null;
+
+  private drawRoom(): void {
+    const t = this.host.together;
+    const v = t.view();
+    const r = this.roomEl;
+    r.replaceChildren();
+    if (v.code) {
+      r.append(el('h4', '', v.roomName || 'Room'));
+      const row = el('div', 'row');
+      const code = el('span', 'code', v.code);
+      code.style.flex = '1';
+      const copy = el('button', '', 'Copy link');
+      copy.onclick = () => {
+        const url = new URL(location.href);
+        url.searchParams.set('room', v.code!);
+        void navigator.clipboard?.writeText(url.toString()).then(() => this.toast('Link copied'), () => this.toast(url.toString()));
+      };
+      row.append(code, copy);
+      r.append(row, el('h4', '', 'Here now'));
+    } else {
+      r.append(el('h4', '', 'You'));
+      const row = el('div', 'row');
+      const name = el('input');
+      name.value = v.name;
+      name.maxLength = 24;
+      name.onchange = () => t.identity(name.value, v.color);
+      row.append(name);
+      r.append(row);
+      const dots = el('div', 'dots');
+      v.colors.forEach((c, i) => {
+        const b = el('button', i === v.color ? 'on' : '');
+        b.style.background = c;
+        b.onclick = () => {
+          t.identity(name.value, i);
+          this.drawRoom();
+        };
+        dots.append(b);
+      });
+      r.append(dots);
+      const start = el('button', 'wide', 'Start a room with this build');
+      start.onclick = () => t.create(`${name.value || v.name}’s room`);
+      r.append(start, el('h4', '', 'Open rooms'));
+    }
+    this.roomLists = el('div');
+    r.append(this.roomLists);
+    if (v.code) {
+      const leave = el('button', 'wide', 'Leave room');
+      leave.onclick = () => t.leave();
+      r.append(leave);
+    } else {
+      r.append(el('h4', '', 'Join with a code'));
+      const row = el('div', 'row');
+      const code = el('input');
+      code.placeholder = 'ABCDE';
+      code.maxLength = 8;
+      code.style.textTransform = 'uppercase';
+      const go = el('button', '', 'Join');
+      go.onclick = () => code.value.trim() && t.join(code.value);
+      code.onkeydown = (e) => e.key === 'Enter' && go.click();
+      row.append(code, go);
+      r.append(row);
+    }
+    r.append(el('div', 'status', v.status));
+    this.drawRoomLists();
+  }
+
+  /** The parts of the room panel that change on their own: players, open rooms, status. */
+  private drawRoomLists(): void {
+    const box = this.roomLists;
+    if (!box) return;
+    const t = this.host.together;
+    const v = t.view();
+    box.replaceChildren();
+    if (v.code) {
+      for (const m of v.members) {
+        const w = el('div', 'who');
+        const dot = el('i');
+        dot.style.background = m.color;
+        w.append(dot, document.createTextNode(m.name), el('small', '', [m.me ? 'you' : '', m.host ? 'host' : ''].filter(Boolean).join(' · ')));
+        box.append(w);
+      }
+    } else if (!v.list.length) box.append(el('div', 'empty', 'No open rooms right now.'));
+    else {
+      for (const room of v.list) {
+        const w = el('div', 'who');
+        const join = el('button', '', 'Join');
+        join.onclick = () => t.join(room.code);
+        const label = el('span', '', `${room.name}`);
+        label.style.flex = '1';
+        w.append(label, el('small', '', `${room.players} here`), join);
+        box.append(w);
+      }
+    }
+    const st = this.roomEl.querySelector('.status');
+    if (st) st.textContent = v.status;
+  }
+
   private toggleMenu(): void {
     const m = this.menu;
     m.hidden = !m.hidden;
     this.keys.hidden = true;
+    this.showRoom(false);
     if (m.hidden) return;
     m.replaceChildren();
     for (const k of this.host.kits()) {

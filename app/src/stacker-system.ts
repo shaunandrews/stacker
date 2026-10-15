@@ -62,6 +62,11 @@ import { CUBBY_H, CUBBY_W, FACE_STEP, FACES, JAR_H, JAR_R, PartDrum, PER_FACE, P
 import { HDRLoader } from 'three/examples/jsm/loaders/HDRLoader.js';
 import { CONTACT, envId, ENVS, finishIndex, FINISHES, makeBackdrop, makeEnvScene, makeFinish, OCCLUSION, paintBackdrop, patchBlockShader, STYLES } from './look.js';
 import { progress } from './splash.js';
+import { Avatars } from './net/avatars.js';
+import { hash32 } from './net/pose.js';
+import type { Pose } from './net/pose.js';
+import { PLAYER_COLORS, Rooms } from './net/room.js';
+import type { RoomHost } from './net/room.js';
 
 // ---- Platform (world meters ÷ the Size scale = platform-local units) ----
 const PLATE_T = 0.008;
@@ -403,6 +408,7 @@ interface HandState {
   holdButton: Btn | null;
   held: Set<Btn>; // buttons down right now (controllers and mouse)
   camera: boolean; // holding the box camera
+  lockId: string | null; // the placed block picked up (others can't take it while it's held)
   spin: { a0: number; drum0: number } | null; // turning the parts shelf by its cap
   dip: string | null; // the shelf prop the fingertip (or controller tip) is touching
   palm: Vector3; // world direction the palm faces (hands: from the joints; controllers: estimated)
@@ -607,6 +613,14 @@ export class StackerSystem extends createSystem({}) {
   private edited = false;
   /** Every settled edit made here (yours, and your undos), for whoever's listening (multiplayer). */
   onEdit: ((e: Edit) => void) | null = null;
+  // Rooms (net/room.ts): other players, and the blocks they're holding (id hash → their color).
+  private rooms: Rooms | null = null;
+  private avatars: Avatars | null = null;
+  private remoteLocks = new Map<number, string>();
+  private poseInv = new Matrix4();
+  private poseInvQ = new Quaternion();
+  private poseV = new Vector3();
+  private poseQ = new Quaternion();
   private kitBase: { map: Map<string, Spec>; bounds: { x0: number; x1: number; z0: number; z1: number } } | null = null; // the build before a kit: leaving it is one undo step
   private armed: { id: string; at: number } | null = null; // a destructive button waiting for its confirming tap
   private desktop!: DesktopControls;
@@ -774,6 +788,12 @@ export class StackerSystem extends createSystem({}) {
       this.lamp.setGlow(this.dimNow);
       this.track(this.world.createTransformEntity(this.lamp.group));
       this.applyVisuals();
+      this.rooms = new Rooms(this.roomHost());
+      this.rooms.onChange = () => this.hud?.roomChanged();
+      this.avatars = new Avatars();
+      this.world.createTransformEntity(this.avatars.root, { persistent: true });
+      const roomCode = new URLSearchParams(location.search).get('room');
+      if (roomCode) void this.rooms.join(roomCode);
       this.ready = true;
       if (this.desktop.enabled) this.frameCamera();
       progress(1, 'Ready');
@@ -828,6 +848,7 @@ export class StackerSystem extends createSystem({}) {
     }
     this.tickShelf(delta);
     this.tickWrist(delta);
+    this.tickRoom(delta);
     this.updateSelectionOutlines();
     // Redraw shadows only while something that casts them moves, or after a change —
     // last, so everything this frame changed is in.
@@ -839,7 +860,7 @@ export class StackerSystem extends createSystem({}) {
     }
     this.saveTimer += delta;
     if (this.saveTimer > 1) {
-      if (this.dirty && !this.busy()) this.writeStore('stacker.autosave', this.serialize());
+      if (this.dirty && !this.busy() && !this.rooms?.code) this.writeStore('stacker.autosave', this.serialize()); // a room's build isn't yours to keep
       if (this.visualDirty) {
         this.writeStore('stacker.look', {
           version: LOOK_VERSION,
@@ -2798,6 +2819,7 @@ export class StackerSystem extends createSystem({}) {
       snapShown: [],
       snapCount: 0,
       target: null,
+      lockId: null,
       targetFar: false,
       pieces: null,
       swing: null,
@@ -3068,6 +3090,31 @@ export class StackerSystem extends createSystem({}) {
         if (!this.kit) return;
         this.hudPainter ??= new ManualPainter(this.lib, (part) => this.edgeGeo(part));
         this.hudPainter.paint(canvas, this.kit.steps, this.kit.step, 0);
+      },
+      together: {
+        available: async () => {
+          while (!this.rooms) await new Promise((r) => setTimeout(r, 200));
+          return this.rooms.available();
+        },
+        view: () => {
+          const r = this.rooms;
+          const host = r?.members[0]?.player;
+          return {
+            code: r?.code ?? null,
+            roomName: r?.roomName ?? '',
+            status: r?.status ?? '',
+            name: r?.name ?? '',
+            color: r?.color ?? 0,
+            colors: PLAYER_COLORS,
+            members: (r?.members ?? []).map((m) => ({ name: m.name, color: PLAYER_COLORS[m.color % PLAYER_COLORS.length], me: m.player === this.playerId, host: m.player === host })),
+            list: r?.list ?? [],
+          };
+        },
+        watchList: (on) => this.rooms?.watchList(on),
+        create: (name) => void this.rooms?.create(name),
+        join: (code) => void this.rooms?.join(code),
+        leave: () => this.rooms?.leave(),
+        identity: (name, color) => this.rooms?.setIdentity(name, color),
       },
     };
   }
@@ -3847,6 +3894,7 @@ export class StackerSystem extends createSystem({}) {
   private onDelete(t: Target): void {
     if (t.kind === 'placed') {
       const group = this.selection.has(t.placed!) ? [...this.selection] : [t.placed!];
+      if (this.lockedByOther(group)) return;
       for (const rec of group) {
         this.placedWorldPose(rec, this.v1, this.q1);
         this.dropLoose(this.spawnLoose(rec.part, rec.color, this.v1, this.q1, rec.finish), true);
@@ -4053,6 +4101,7 @@ export class StackerSystem extends createSystem({}) {
 
   private holdPlaced(h: HandState, btn: Btn, anchor: Placed, group: Placed[], duplicate: boolean): void {
     const recs = [anchor, ...group.filter((r) => r !== anchor)];
+    if (!duplicate && this.lockedByOther(recs)) return;
     const pieces: Piece[] = recs.map((rec) => {
       this.placedWorldPose(rec, this.v1, this.q1);
       return { block: this.spawnLoose(rec.part, rec.color, this.v1, this.q1, rec.finish), offPos: new Vector3(), offQuat: new Quaternion() };
@@ -4060,6 +4109,7 @@ export class StackerSystem extends createSystem({}) {
     h.fromSelection = group.length > 1 || this.selection.has(anchor);
     if (!duplicate) for (const rec of recs) this.removePlaced(rec);
     this.startHold(h, btn, pieces, h.targetFar);
+    h.lockId = duplicate ? null : anchor.id;
   }
 
   private holdLoose(h: HandState, btn: Btn, blocks: Loose[], far: boolean): void {
@@ -4069,6 +4119,7 @@ export class StackerSystem extends createSystem({}) {
 
   private startHold(h: HandState, btn: Btn, pieces: Piece[], far: boolean): void {
     h.pieces = pieces;
+    h.lockId = null;
     h.snapGen = -1;
     h.lost = 0;
     h.holdButton = btn;
@@ -5771,6 +5822,110 @@ export class StackerSystem extends createSystem({}) {
     this.undoStack.length = 0;
     this.redoStack.length = 0;
     this.resetStable();
+  }
+
+  // ---- rooms (net/room.ts, docs/11)
+
+  private roomHost(): RoomHost {
+    const self = this;
+    return {
+      playerId: this.playerId,
+      get onEdit() {
+        return self.onEdit;
+      },
+      set onEdit(fn) {
+        self.onEdit = fn;
+      },
+      applyRemote: (e) => {
+        this.applyRemote(e);
+        this.shadowDirty = true;
+      },
+      buildState: () => this.buildState(),
+      loadBuildState: (st) => this.loadBuildState(st),
+      isBusy: () => this.busy(),
+      samplePose: (p) => this.samplePose(p),
+      stashSolo: () => this.writeStore('stacker.solo', this.serialize()),
+      restoreSolo: () => {
+        const solo = this.readStore('stacker.solo') as { blocks?: unknown[] } | null;
+        if (solo?.blocks) this.deserialize(solo);
+        else this.clearPlaced();
+        this.undoStack.length = 0;
+        this.redoStack.length = 0;
+        this.resetStable();
+        this.aimKeyLight();
+      },
+      roomChanged: () => {
+        this.hud?.roomChanged();
+        if (!this.rooms?.code) {
+          this.avatars?.clear();
+          this.remoteLocks.clear();
+        }
+      },
+    };
+  }
+
+  /** Someone else is holding one of these blocks: first grab wins. */
+  private lockedByOther(recs: Placed[]): boolean {
+    if (!this.remoteLocks.size) return false;
+    const taken = recs.some((r) => this.remoteLocks.has(hash32(r.id)));
+    if (taken) {
+      this.hud?.toast('Someone else has that block');
+      this.tick(0.1);
+    }
+    return taken;
+  }
+
+  /** Each frame in a room: send your pose, draw everyone else's, and note what they hold. */
+  private tickRoom(delta: number): void {
+    const rooms = this.rooms;
+    if (!rooms?.code) return;
+    rooms.tick(delta);
+    this.remoteLocks.clear();
+    for (const r of rooms.remotes) if (r.pose.holding && r.pose.held) this.remoteLocks.set(r.pose.held, r.color);
+    this.avatars?.update(rooms.remotes, this.root.object3D!, delta, (hash) => {
+      const rec = this.placedRecs.find((p) => hash32(p.id) === hash);
+      return rec ? this.lib.geometries[rec.part] : null;
+    });
+  }
+
+  /** This player's pose for the room, in the platform's frame (see net/pose.ts). */
+  private samplePose(p: Pose): void {
+    const r = this.root.object3D!;
+    r.updateWorldMatrix(true, false);
+    this.poseInv.copy(r.matrixWorld).invert();
+    r.getWorldQuaternion(this.poseInvQ).invert();
+    const put = (k: number, pos: Vector3, quat: Quaternion | null) => {
+      const v = this.poseV.copy(pos).applyMatrix4(this.poseInv);
+      const q = quat ? this.poseQ.copy(this.poseInvQ).multiply(quat) : this.poseQ.identity();
+      p.xf.set([v.x, v.y, v.z, q.x, q.y, q.z, q.w], k * 7);
+    };
+    const xr = this.renderer.xr.isPresenting;
+    p.kind = xr ? 1 : 0;
+    this.camera.getWorldPosition(this.v4);
+    this.camera.getWorldQuaternion(this.q4);
+    put(0, this.v4, this.q4);
+    if (xr) {
+      for (const h of this.hands) put(h.hand === 'left' ? 1 : 2, h.rayOrigin, h.quat);
+    } else {
+      // The cursor: on the block it's over, else where its ray meets the plate.
+      const h = this.hands[1];
+      if (h.target?.kind === 'placed' && h.target.placed) this.placedWorldPose(h.target.placed, this.v4, this.q4);
+      else {
+        const o = this.v5.copy(h.rayOrigin).applyMatrix4(this.poseInv);
+        const d = this.v6.copy(h.rayDir).transformDirection(this.poseInv);
+        const t = d.y < -1e-4 ? -o.y / d.y : 1;
+        this.v4.copy(o).addScaledVector(d, t).applyMatrix4(r.matrixWorld);
+      }
+      put(1, this.v4, null);
+    }
+    for (const h of this.hands) {
+      if (!h.pieces || !h.lockId) continue;
+      p.holding = true;
+      p.held = hash32(h.lockId);
+      const m = h.pieces[0].block.mesh;
+      put(3, m.position, m.quaternion);
+      break;
+    }
   }
 
   private serialize(): object {
