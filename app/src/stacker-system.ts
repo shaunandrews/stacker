@@ -46,6 +46,9 @@ import type { Material, Texture, ToneMapping } from '@iwsdk/core';
 import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js';
 import { dims, isSymmetric, Library, studGeometry, TABS } from './blocks.js';
 import { DesktopControls } from './desktop.js';
+import { Hud } from './hud.js';
+import type { HudState } from './hud.js';
+import { Materials, Thumbnailer } from './catalog/render.js';
 import { ArtRenderer, KitBox, TEAR_PULL } from './kit-boxes.js';
 import type { ArtPiece } from './kit-boxes.js';
 import { KITS, kitPiece } from './kits.js';
@@ -221,7 +224,7 @@ type Instructions = (typeof INSTRUCTIONS)[number];
 
 const HANDS = ['left', 'right'] as const;
 type Hand = (typeof HANDS)[number];
-type Btn = 'squeeze' | 'trigger' | 'a' | 'b' | 'pinch' | 'mid';
+type Btn = 'squeeze' | 'trigger' | 'a' | 'b' | 'pinch' | 'mid' | 'brush'; // brush: the desktop brush, held until put down
 type Tool = 'build' | 'select' | 'paint';
 type PanelId = 'wrist' | 'settings' | 'manual';
 type FrameKind = 'platform' | 'shelf' | 'rack' | 'drum' | PanelId;
@@ -535,6 +538,13 @@ export class StackerSystem extends createSystem({}) {
   private wristOpen = 0; // 0–1, eased
   private wristPinned = false; // tests and the desktop: docked by the shelf, always open
   private controlsOpen = false;
+  // Desktop play: the HUD, the brush's clipboard, box-select, and the HUD's manual page.
+  private hud: Hud | null = null;
+  private hudThumbs: Thumbnailer | null = null;
+  private hudPainter: ManualPainter | null = null;
+  private clipboard: Array<{ part: number; color: number; finish: number; m: Matrix4 }> = [];
+  private marquee: { x: number; y: number } | null = null;
+  private brushName: string | null = null;
   private settings!: Panel;
   private manual: Panel | null = null;
   private color = 0;
@@ -682,6 +692,7 @@ export class StackerSystem extends createSystem({}) {
         this.frameCamera();
         this.builtForXR = false; // re-place everything around the head on the next XR entry
       } else this.desktop.setCursor('');
+      this.desktopLayout(this.desktop.enabled);
       this.applyVisuals();
     };
     window.addEventListener('stacker:desktop', onDesktop);
@@ -1323,7 +1334,13 @@ export class StackerSystem extends createSystem({}) {
    */
   private tickWrist(delta: number): void {
     const obj = this.wrist.entity.object3D!;
-    const docked = this.wristPinned || (this.desktop.enabled && !this.renderer.xr.isPresenting);
+    const desktop = this.desktop.enabled && !this.renderer.xr.isPresenting;
+    if (desktop && !this.wristPinned) {
+      obj.visible = false;
+      this.wristOpen = 0;
+      return;
+    }
+    const docked = this.wristPinned;
     if (docked) {
       obj.visible = true;
       obj.scale.setScalar(1);
@@ -2949,23 +2966,272 @@ export class StackerSystem extends createSystem({}) {
     const at = d.pressed ? d.pressNdc : d.ndc; // aim the press where the button went down
     h.rayDir.set(at.x, at.y, 0.5).unproject(this.camera).sub(h.rayOrigin).normalize();
     h.point.copy(h.rayOrigin);
-    if (d.pressed) h.down.add(d.alt ? 'a' : 'trigger');
+    const marquee = d.pressed && d.shift && !h.pieces && h.target?.kind !== 'placed';
+    if (d.pressed && !marquee && !this.marquee) h.down.add('trigger');
     if (d.released) h.up.add('trigger').add('a');
     if (d.actions.has('delete')) h.down.add('b');
   }
 
-  /** Desktop view: keyboard actions and the orbit camera. */
+  /** Desktop view: keyboard actions, the HUD, box-select, and the orbit camera. */
   private updateDesktop(): void {
     const d = this.desktop;
     d.poll();
     if (!d.enabled || this.renderer.xr.isPresenting) return;
-    if (d.actions.has('undo')) this.undo();
-    if (d.actions.has('redo')) this.redo();
-    if (d.actions.has('frame')) this.frameCamera();
-    if (d.actions.has('tool1')) this.onButton('tool:build');
-    if (d.actions.has('tool2')) this.onButton('tool:select');
-    if (d.actions.has('tool3')) this.onButton('tool:paint');
-    d.applyCamera(this.camera);
+    const h = this.hands?.[1];
+    d.busy = !!h && !!(h.pieces || h.frame || h.box || h.camera || h.spin || h.swing);
+    const act = d.actions;
+    if (act.has('undo')) this.undo();
+    if (act.has('redo')) this.redo();
+    if (act.has('frame')) this.frameCamera();
+    if (act.has('focus')) this.focusAtCursor();
+    if (act.has('selectAll')) {
+      for (const rec of this.placedRecs) this.selection.add(rec);
+      this.redrawUi((u) => u.id === 'deselect');
+    }
+    if (act.has('copy') || act.has('dup')) this.copySelection();
+    if (act.has('paste') || act.has('dup')) this.pasteClipboard();
+    if (act.has('pick')) this.eyedropper();
+    if (act.has('cancel') && h?.holdButton === 'brush') this.putBrushDown();
+    for (let n = 1; n <= 9; n++) {
+      if (!act.has(`slot${n}` as 'slot1')) continue;
+      const slot = this.hud?.slot(n - 1);
+      if (slot) this.loadBrush(slot.part, slot.color);
+    }
+    this.tickMarquee();
+    this.hud?.update();
+    d.applyCamera(this.camera, this.frameDelta);
+  }
+
+  // ---- desktop play
+
+  /** On the desktop the HUD does the VR furniture's jobs: hide the shelf, wrist menu and kit tray. */
+  private desktopLayout(on: boolean): void {
+    if (on && !this.hud) this.hud = new Hud(this.hudHost());
+    this.hud?.show(on);
+    // The old key list gives way to the HUD's ? sheet (its "Enter mixed reality" button stays).
+    for (const id of ['hud-help', 'hud-keys']) document.getElementById(id)?.toggleAttribute('hidden', on);
+    this.desktop.overHud = (x, y) => !!this.hud?.covers(x, y);
+    if (this.drum) this.drum.root.visible = !on;
+    if (this.shelf) this.shelf.object3D!.visible = !on;
+    for (const it of this.shelfItems) it.block.mesh.visible = !on;
+    if (this.manual) this.manual.entity.object3D!.visible = !on;
+    if (this.settings) this.settings.entity.object3D!.visible = !on || this.desktopSettings;
+  }
+
+  private desktopSettings = false;
+
+  private hudHost(): ConstructorParameters<typeof Hud>[0] {
+    return {
+      tabs: TABS.filter((t) => t !== 'Minifigs'),
+      parts: this.lib.parts.map((p, index) => ({ index, name: p.name, tab: p.tab })).filter((p) => p.tab !== 'Minifigs'),
+      colors: this.lib.colors.map((c) => ({ name: c.name, hex: c.hex, alpha: c.alpha })),
+      finishes: FINISHES.map((f) => f.label),
+      kits: () => this.boxes.map((b) => b.kit),
+      state: () => this.hudState(),
+      thumb: (part, color, finish) => {
+        this.hudThumbs ??= new Thumbnailer(this.lib, new Materials(this.lib));
+        return this.hudThumbs.part(part, color, finish, 160);
+      },
+      pick: (part, color) => this.loadBrush(part, color),
+      setColor: (c) => {
+        this.selectColor(c);
+        if (this.selection.size) this.recolor([...this.selection], c);
+        this.recolorBrush();
+      },
+      setFinish: (f) => this.pressProp({ type: 'tile', value: f }),
+      command: (id) => {
+        if (id === 'settings') {
+          this.desktopSettings = !this.desktopSettings;
+          this.desktopLayout(true);
+          return;
+        }
+        this.onButton(id);
+      },
+      startKit: (id, title) => {
+        if (this.placedRecs.length && !this.kit && !window.confirm(`Start ${title}? It clears the plate (undo brings your build back after).`)) return;
+        void this.startKit(id, title).then(() => this.desktopLayout(true));
+      },
+      page: (canvas) => {
+        if (!this.kit) return;
+        this.hudPainter ??= new ManualPainter(this.lib, (part) => this.edgeGeo(part));
+        this.hudPainter.paint(canvas, this.kit.steps, this.kit.step, 0);
+      },
+    };
+  }
+
+  private hudState(): HudState {
+    const k = this.kit;
+    return {
+      color: this.color,
+      finish: this.finish,
+      tool: this.tool,
+      brush: this.hands?.[1]?.holdButton === 'brush' ? this.brushName : null,
+      selection: this.selection.size,
+      undo: this.undoStack.length > 0 && !k,
+      redo: this.redoStack.length > 0 && !k,
+      kit: k
+        ? {
+            title: k.title,
+            step: k.step,
+            steps: k.steps.length,
+            left: k.remaining.length,
+            pieces: k.remaining.map(({ rec }) => ({ part: rec.part, color: rec.color })).slice(0, 9),
+          }
+        : null,
+    };
+  }
+
+  /**
+   * Load the brush: the part (or the clipboard's group) rides under the cursor, snapping;
+   * each click places a copy (see stampBrush). Esc or right-click puts it down.
+   */
+  private loadBrush(part: number, color?: number, group?: Array<{ part: number; color: number; finish: number; m: Matrix4 }>): void {
+    const h = this.hands[1];
+    if (h.mode !== 'mouse') return;
+    if (h.pieces) this.dropPieces(h);
+    if (color !== undefined && !group) this.selectColor(color);
+    const r = this.root.object3D!;
+    const at = this.v4.copy(h.rayOrigin).addScaledVector(h.rayDir, 0.4);
+    const blocks = group
+      ? group.map((g) => {
+          const pos = new Vector3().setFromMatrixPosition(g.m).applyMatrix4(r.matrixWorld);
+          const q = r.quaternion.clone().multiply(new Quaternion().setFromRotationMatrix(g.m));
+          return this.spawnLoose(g.part, g.color, pos, q, g.finish);
+        })
+      : [this.spawnLoose(part, this.color, at, r.quaternion, this.finish)];
+    h.fromSelection = false;
+    this.startHold(h, 'brush', blocks.map((block) => ({ block, offPos: new Vector3(), offQuat: new Quaternion() })), true);
+    this.brushName = group ? `${group.length} pieces` : this.shortName(this.lib.parts[part].name);
+    if (!group) this.hud?.used(part);
+  }
+
+  /** Place a copy of what's on the brush where its ghost shows, and keep the brush loaded. */
+  private stampBrush(h: HandState): void {
+    const pieces = h.pieces!;
+    if (!h.snapOk || h.snapGen !== this.editGen) {
+      if (!this.computeSnap(pieces)) {
+        this.hud?.toast('No spot here');
+        return;
+      }
+      h.snapCount = this.snapOut.length;
+      for (let k = 0; k < h.snapCount; k++) h.snapShown[k] = { m: this.snapOut[k].m.clone(), target: this.snapOut[k].target };
+    }
+    const recs = h.snapShown.slice(0, h.snapCount).map((o, k) => this.makeRec(pieces[k].block.part, pieces[k].block.color, o.m.clone(), o.target, pieces[k].block.finish));
+    for (const rec of recs) {
+      this.addPlaced(rec);
+      this.kitCheck(rec);
+    }
+    this.click();
+    h.snapGen = -1; // the build changed: find the next spot
+    if (!this.kit && pieces.length === 1) this.hud?.used(pieces[0].block.part);
+    // During a kit, a brush of a piece that's now all placed goes away.
+    if (this.kit && pieces.length === 1 && !this.kit.remaining.some(({ rec }) => rec.part === pieces[0].block.part && rec.color === pieces[0].block.color)) this.putBrushDown();
+  }
+
+  private putBrushDown(): void {
+    const h = this.hands[1];
+    if (h.holdButton === 'brush' && h.pieces) this.dropPieces(h);
+    this.brushName = null;
+  }
+
+  /** New color while the brush is loaded: the brush takes it too. */
+  private recolorBrush(): void {
+    const h = this.hands[1];
+    if (h?.holdButton !== 'brush' || !h.pieces || h.pieces.length !== 1) return;
+    const b = h.pieces[0].block;
+    b.color = this.color;
+    b.mesh.material = this.matFor(b.finish, this.color);
+  }
+
+  /** ⌥-click or I: load the brush with the part and color under the cursor. */
+  private eyedropper(): void {
+    const h = this.hands[1];
+    const t = h.holdButton === 'brush' ? this.pickUnderCursor(h) : h.target;
+    const rec = t?.kind === 'placed' ? t.placed! : null;
+    if (!rec) return;
+    this.selectColor(rec.color);
+    this.finish = rec.finish;
+    this.fillPartsShelf();
+    this.loadBrush(rec.part);
+    this.hud?.toast(`${this.shortName(this.lib.parts[rec.part].name)} · ${this.lib.colors[rec.color].name}`);
+  }
+
+  private overHudDrawer(): boolean {
+    if (!this.hud) return false;
+    const r = this.renderer.domElement.getBoundingClientRect();
+    const d = this.desktop;
+    return this.hud.overDrawer(r.left + ((d.ndc.x + 1) / 2) * r.width, r.top + ((1 - d.ndc.y) / 2) * r.height);
+  }
+
+  /** What's under the cursor, ignoring what's on the brush. */
+  private pickUnderCursor(h: HandState): Target | null {
+    const saved = h.pieces;
+    h.pieces = null;
+    const t = this.collectTargets(h, true);
+    h.pieces = saved;
+    return t;
+  }
+
+  /** ⌘C: the selection (or the block under the cursor), relative to its first block. */
+  private copySelection(): void {
+    const h = this.hands[1];
+    const recs = this.selection.size ? [...this.selection] : h.target?.kind === 'placed' ? [h.target.placed!] : [];
+    if (!recs.length) return;
+    this.clipboard = recs.map((rec) => ({ part: rec.part, color: rec.color, finish: rec.finish, m: rec.m.clone() }));
+    this.hud?.toast(`Copied ${recs.length} ${recs.length === 1 ? 'piece' : 'pieces'}`);
+  }
+
+  /** ⌘V: the clipboard on the brush, keeping its shape. */
+  private pasteClipboard(): void {
+    if (!this.clipboard.length) return;
+    this.loadBrush(this.clipboard[0].part, undefined, this.clipboard);
+  }
+
+  /** Double-click: orbit around the block (or plate spot) under the cursor, a little closer. */
+  private focusAtCursor(): void {
+    const h = this.hands[1];
+    const t = this.pickUnderCursor(h);
+    const d = this.desktop;
+    if (t?.kind === 'placed') {
+      this.placedWorldPose(t.placed!, d.target, this.q1);
+      d.distance = Math.max(0.12, Math.min(d.distance, 0.35));
+    } else {
+      const p = this.platePoint(h, this.v1);
+      if (p) d.target.copy(this.root.object3D!.localToWorld(p));
+    }
+  }
+
+  /** ⇧-drag on empty space: a box; blocks whose centers fall in it are selected. */
+  private tickMarquee(): void {
+    const d = this.desktop;
+    const h = this.hands?.[1];
+    if (!h) return;
+    const canvas = this.renderer.domElement;
+    const rect = canvas.getBoundingClientRect();
+    const px = (n: number, w: number, o: number) => o + ((n + 1) / 2) * w;
+    if (d.pressed && d.shift && !h.pieces && h.target?.kind !== 'placed') {
+      this.marquee = { x: px(d.pressNdc.x, rect.width, rect.left), y: px(-d.pressNdc.y, rect.height, rect.top) };
+    }
+    if (!this.marquee) return;
+    const x = px(d.ndc.x, rect.width, rect.left);
+    const y = px(-d.ndc.y, rect.height, rect.top);
+    const box = { x: Math.min(x, this.marquee.x), y: Math.min(y, this.marquee.y), w: Math.abs(x - this.marquee.x), h: Math.abs(y - this.marquee.y) };
+    if (d.holding) {
+      this.hud?.marquee(box);
+      return;
+    }
+    this.hud?.marquee(null);
+    this.marquee = null;
+    if (box.w < 4 && box.h < 4) return;
+    for (const rec of this.placedRecs) {
+      this.placedWorldPose(rec, this.v1, this.q1);
+      const p = this.v1.project(this.camera);
+      const sx = px(p.x, rect.width, rect.left);
+      const sy = px(-p.y, rect.height, rect.top);
+      if (p.z < 1 && sx >= box.x && sx <= box.x + box.w && sy >= box.y && sy <= box.y + box.h) this.selection.add(rec);
+    }
+    this.tick(0.2);
+    this.redrawUi((u) => u.id === 'deselect');
   }
 
   /** Point the desktop camera at the platform from the front, panels in view behind it. */
@@ -3063,7 +3329,13 @@ export class StackerSystem extends createSystem({}) {
         h.holdButton = takeOver;
         this.pulse(h.hand, 0.3, 15);
       }
-      if (released) this.releasePieces(h);
+      if (h.holdButton === 'brush') {
+        // The desktop brush: clicks (and Space) stamp copies; it stays loaded.
+        h.overTrash = false;
+        if (h.down.has('trigger') || this.desktop.actions.has('shoot')) this.stampBrush(h);
+        if (h.down.has('b')) this.putBrushDown();
+        if (h.pieces) this.holdPieces(h, delta);
+      } else if (released) this.releasePieces(h);
       else if (h.down.has('b')) this.dropPieces(h);
       else this.holdPieces(h, delta);
     } else if (h.swing) {
@@ -3286,7 +3558,7 @@ export class StackerSystem extends createSystem({}) {
     }
 
     for (const l of this.loose) {
-      if (this.isCarried(l)) continue;
+      if (this.isCarried(l) || !l.mesh.visible) continue;
       const e = this.halfExtents(l.part, this.v5);
       const sc = this.probeObject(h, l.mesh, e.x, e.y, e.z, far);
       if (sc < limit) best = this.consider(best, { kind: 'loose', loose: l, obj: l.mesh, score: sc });
@@ -3864,7 +4136,8 @@ export class StackerSystem extends createSystem({}) {
       m.quaternion.copy(anchor.quaternion).multiply(pieces[k].offQuat);
     }
 
-    h.overTrash = this.overLibrary(anchor.position);
+    h.overTrash = this.overLibrary(anchor.position) || (h.mode === 'mouse' && this.overHudDrawer());
+    if (h.mode === 'mouse') this.hud?.setTrash(h.overTrash);
     this.drawTurnGuides(h, pieces, delta);
 
     // Kit guidance: light up where this piece goes and draw a line to it.
@@ -3992,8 +4265,8 @@ export class StackerSystem extends createSystem({}) {
     h.holdButton = null;
     const anchor = pieces[0].block.mesh;
     h.overTrash = false;
-    // Dropped on the library → put back.
-    if (this.overLibrary(anchor.position)) {
+    // Dropped on the parts shelf (or the desktop HUD's parts drawer) → put back.
+    if (this.overLibrary(anchor.position) || (h.mode === 'mouse' && this.overHudDrawer())) {
       for (const p of pieces) this.dropLoose(p.block, true);
       return;
     }
@@ -4404,6 +4677,7 @@ export class StackerSystem extends createSystem({}) {
     this.fillShelf(items);
     this.drawShelfLabel();
     if (this.manual) this.showPage(kit.step);
+    if (this.desktop.enabled && !this.renderer.xr.isPresenting) this.desktopLayout(true); // the HUD shows the kit
     this.redrawUi();
   }
 
@@ -4539,6 +4813,7 @@ export class StackerSystem extends createSystem({}) {
         .add(r.position);
       obj.quaternion.copy(r.quaternion).multiply(this.q1.setFromEuler(this.euler.set(-0.3, -0.55, 0, 'YXZ')));
       this.showPage(this.kit!.step);
+      if (this.desktop.enabled && !this.renderer.xr.isPresenting) obj.visible = false;
     } else if (!wantManual && this.manual) {
       this.destroyPanel(this.manual);
       this.manual = null;

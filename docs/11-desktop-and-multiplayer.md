@@ -1,6 +1,6 @@
 # 11 · Desktop play & cross-device multiplayer (plan)
 
-Status: **planning**. The goal: keyboard and mouse play that feels native rather than "VR with a cursor", and then online rooms where people on computers and in headsets build on the same plate together. Desktop comes first, built so its actions can go over the network later.
+Status: **Phase 1 (desktop) shipped**; phases 2–4 in progress. The goal: keyboard and mouse play that feels native rather than "VR with a cursor", and then online rooms where people on computers and in headsets build on the same plate together. Desktop comes first, built so its actions can go over the network later.
 
 ## What we want
 

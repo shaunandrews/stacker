@@ -30,21 +30,30 @@ Destructive buttons ask for a second tap within 3 s: **Clear**, **Stress** (when
 
 ## Desktop (mouse + keyboard)
 
-The splash screen offers **Explore on this computer**: an orbit camera around the platform, panels standing behind it, and the cursor as the right hand (`desktop.ts`, read in `readMouse`). Outside XR there's no passthrough, so the preset's backdrop fills in.
+The splash screen offers **Explore on this computer**: an orbit camera around the platform and a HUD over the view (`hud.ts`, HTML and CSS). The VR furniture (parts shelf, wrist menu, kit tray, floating manual) hides; the HUD does their jobs. The cursor is still the right hand underneath (`readMouse`), so grabbing, snapping and kits work the same.
 
-| Action | Mouse / keys |
-|---|---|
-| Press buttons, pick a part, grab | Click / drag (left) |
-| Duplicate | Alt + drag |
-| Select | Shift + click (any tool) |
-| Turn / tip the held block | Q E or ← → / ↑ ↓ |
-| Delete | Delete or Backspace (hovered block, selection, or what's held) |
-| Tools | 1 Build · 2 Select · 3 Paint |
-| Undo / redo | ⌘/Ctrl + Z, add Shift to redo |
-| Orbit / pan / zoom | Right-drag / Shift + right-drag or middle-drag / wheel |
-| Frame the platform | F |
+**HUD:** a parts drawer on the left (tabs, search, part thumbnails in the current color and finish), a hotbar of nine slots along the bottom (the parts you use go in from the left; 📌 pins one to its slot), color swatches and Plastic / Wood / Clear, and a top bar with the status line, Build / Select / Paint, undo / redo, **Kits ▾**, ⚙ (shows the Settings panel) and **?** (this list). During a kit, a side panel shows the manual page with ◀ ▶, ↺ and Place it, and the hotbar holds the step's remaining pieces in their colors.
 
-A carried block sits on whatever is under the cursor — a placed block or the plate — and the normal snap takes it from there. Over the parts shelf, it follows the cursor onto it (letting go removes it). Presses aim where the button went down, so a quick drag still grabs what was under the cursor.
+**The brush:** click a part (drawer or hotbar, or press 1–9) and it rides under the cursor with its snap ghost. Each click (or Space) places a copy and keeps the brush loaded; Esc or right-click puts it down. During a kit, a brush whose pieces are all placed goes away by itself.
+
+| Action | Trackpad | Mouse | Keys |
+|---|---|---|---|
+| Pan | Two-finger scroll | ⇧ + right-drag, middle-drag | W A S D (nothing held) |
+| Zoom | Pinch | Wheel | + / − |
+| Orbit | ⌥ + two-finger scroll, ⌥-drag | Right-drag | Q / E (nothing held), Page Up / Down to tilt |
+| Focus a block · frame the plate | Double-click it | Same | F |
+| Load the brush | Click a part | Same | 1–9 (hotbar) |
+| Place | Click | Click | Space |
+| Put the brush down | Esc | Right-click | Esc |
+| Turn · tip (brush or held block) | | | R / ⇧R · T / ⇧T (Q/E and the arrows too) |
+| Move a placed block | Drag it | Same | |
+| Eyedropper | ⌥-click a block | Same | I |
+| Select · box-select | ⇧-click · ⇧-drag on empty space | Same | ⌘A all |
+| Copy · paste · duplicate | | | ⌘C · ⌘V (onto the brush) · ⌘D |
+| Delete | Drag onto the parts drawer (it turns red) | Same | Delete / Backspace |
+| Undo / redo | | | ⌘Z, ⇧⌘Z |
+
+A trackpad and a mouse wheel are told apart by their events: pinch arrives as a wheel event with `ctrlKey`, a mouse wheel in big whole steps with no sideways part; everything else pans (`DesktopControls.wheelMode` can force either). W A S D and Q / E only move the camera while nothing is held, so they never fight the brush. A carried block or brush sits on whatever is under the cursor (a placed block or the plate) and the normal snap takes it from there.
 
 ## Input model
 
