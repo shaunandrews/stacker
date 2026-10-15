@@ -617,6 +617,7 @@ export class StackerSystem extends createSystem({}) {
   private rooms: Rooms | null = null;
   private avatars: Avatars | null = null;
   private remoteLocks = new Map<number, string>();
+  private voicePos = new Map<string, number[]>();
   private poseInv = new Matrix4();
   private poseInvQ = new Quaternion();
   private poseV = new Vector3();
@@ -789,7 +790,10 @@ export class StackerSystem extends createSystem({}) {
       this.track(this.world.createTransformEntity(this.lamp.group));
       this.applyVisuals();
       this.rooms = new Rooms(this.roomHost());
-      this.rooms.onChange = () => this.hud?.roomChanged();
+      this.rooms.onChange = () => {
+        this.hud?.roomChanged();
+        this.redrawUi((u) => u.id.startsWith('room:'));
+      };
       this.avatars = new Avatars();
       this.world.createTransformEntity(this.avatars.root, { persistent: true });
       const roomCode = new URLSearchParams(location.search).get('room');
@@ -1336,6 +1340,7 @@ export class StackerSystem extends createSystem({}) {
       ['save', 'load'],
     ];
     if (this.kit) rows.push(['kit:prev', 'kit:step', 'kit:next'], ['kit:exit', 'kit:restart', 'kit:skip']);
+    if (this.rooms?.code) rows.push(['room:info', 'room:leave'], ['room:voice', 'room:mute']);
     const rh = 0.024;
     const h = rows.length * (rh + GAP) - GAP + 2 * MARGIN;
     if (Math.abs(h - p.h) > 1e-4) {
@@ -1346,12 +1351,12 @@ export class StackerSystem extends createSystem({}) {
     const inner = p.w - 2 * MARGIN;
     let y = p.h / 2 - MARGIN;
     for (const ids of rows) {
-      const wts = ids.map((id) => (id === 'slot' || id === 'kit:step' ? 2.4 : id.startsWith('slot:') || id === 'kit:prev' || id === 'kit:next' ? 0.6 : 1));
+      const wts = ids.map((id) => (id === 'slot' || id === 'kit:step' || id === 'room:info' ? 2.4 : id.startsWith('slot:') || id === 'kit:prev' || id === 'kit:next' ? 0.6 : 1));
       const unit = (inner - (ids.length - 1) * GAP) / wts.reduce((a, b) => a + b, 0);
       let x = left;
       ids.forEach((id, k) => {
         const w = unit * wts[k];
-        this.addUi(p, id, id === 'slot' || id === 'kit:step' ? 'label' : 'button', 0, x + w / 2, y - rh / 2, w, rh);
+        this.addUi(p, id, id === 'slot' || id === 'kit:step' || id === 'room:info' ? 'label' : 'button', 0, x + w / 2, y - rh / 2, w, rh);
         x += w + GAP;
       });
       y -= rh + GAP;
@@ -1819,6 +1824,16 @@ export class StackerSystem extends createSystem({}) {
         const k = this.kit;
         return k ? `Step ${k.step + 1} of ${k.steps.length}${k.done[k.step].every((d) => d) ? ' ✓' : ''}` : '';
       }
+      case 'room:info': {
+        const r = this.rooms;
+        return r?.code ? `Room ${r.code} · ${Math.max(1, r.members.length)} here` : '';
+      }
+      case 'room:leave':
+        return this.isArmed('room:leave') ? 'Tap to leave' : 'Leave';
+      case 'room:voice':
+        return this.rooms?.voice?.on ? 'Leave voice' : 'Join voice';
+      case 'room:mute':
+        return this.rooms?.voice?.on ? (this.rooms.voice.muted ? 'Unmute' : 'Mute') : 'Mic off';
       case 'controls':
         return this.controlsOpen ? 'Controls ▾' : 'Controls ▸';
       case 'credits':
@@ -1951,6 +1966,7 @@ export class StackerSystem extends createSystem({}) {
   }
 
   private uiDisabled(item: UiItem): boolean {
+    if (item.id === 'room:mute') return !this.rooms?.voice?.on;
     if (item.id === 'undo') return !this.undoStack.length || !!this.kit;
     if (item.id === 'redo') return !this.redoStack.length || !!this.kit;
     return false;
@@ -2065,6 +2081,15 @@ export class StackerSystem extends createSystem({}) {
         break;
       case 'load':
         this.loadSlot();
+        break;
+      case 'room:leave':
+        if (this.confirm('room:leave')) this.rooms?.leave();
+        break;
+      case 'room:voice':
+        void this.rooms?.setVoice(!this.rooms.voice?.on);
+        break;
+      case 'room:mute':
+        this.rooms?.voice?.setMuted(!this.rooms.voice.muted);
         break;
       case 'kit:exit':
         this.exitKit();
@@ -3108,6 +3133,7 @@ export class StackerSystem extends createSystem({}) {
             colors: PLAYER_COLORS,
             members: (r?.members ?? []).map((m) => ({ name: m.name, color: PLAYER_COLORS[m.color % PLAYER_COLORS.length], me: m.player === this.playerId, host: m.player === host })),
             list: r?.list ?? [],
+            voice: r?.voice ? { on: r.voice.on, muted: r.voice.muted, connected: r.voice.connected } : null,
           };
         },
         watchList: (on) => this.rooms?.watchList(on),
@@ -3115,6 +3141,8 @@ export class StackerSystem extends createSystem({}) {
         join: (code) => void this.rooms?.join(code),
         leave: () => this.rooms?.leave(),
         identity: (name, color) => this.rooms?.setIdentity(name, color),
+        setVoice: (on) => void this.rooms?.setVoice(on),
+        setMuted: (m) => this.rooms?.voice?.setMuted(m),
       },
     };
   }
@@ -5856,6 +5884,7 @@ export class StackerSystem extends createSystem({}) {
       },
       roomChanged: () => {
         this.hud?.roomChanged();
+        this.layoutWrist();
         if (!this.rooms?.code) {
           this.avatars?.clear();
           this.remoteLocks.clear();
@@ -5886,6 +5915,20 @@ export class StackerSystem extends createSystem({}) {
       const rec = this.placedRecs.find((p) => hash32(p.id) === hash);
       return rec ? this.lib.geometries[rec.part] : null;
     });
+    // Voices come from each player's head or camera; you listen from yours.
+    if (rooms.voice?.on) {
+      const r = this.root.object3D!;
+      this.voicePos.clear();
+      for (const rp of rooms.remotes) {
+        const v = r.localToWorld(this.v4.set(rp.pose.xf[0], rp.pose.xf[1], rp.pose.xf[2]));
+        this.voicePos.set(rp.player, [v.x, v.y, v.z]);
+      }
+      this.camera.getWorldPosition(this.v4);
+      this.camera.getWorldQuaternion(this.q4);
+      const fwd = this.v5.set(0, 0, -1).applyQuaternion(this.q4);
+      const up = this.v6.set(0, 1, 0).applyQuaternion(this.q4);
+      rooms.voice.place({ pos: [this.v4.x, this.v4.y, this.v4.z], fwd: [fwd.x, fwd.y, fwd.z], up: [up.x, up.y, up.z] }, this.voicePos);
+    }
   }
 
   /** This player's pose for the room, in the platform's frame (see net/pose.ts). */

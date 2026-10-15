@@ -9,6 +9,7 @@ import { isEmpty, mergeEdits, splitEdit } from '../edits.js';
 import type { Bounds, Edit, Spec } from '../edits.js';
 import { CastPresence } from './cast.js';
 import { hash32, newPose, packPose, playerNumber, unpackPose, type Pose } from './pose.js';
+import { Voice } from './voice.js';
 import { connectZero, type ZeroApi } from './zero.js';
 
 export type BuildState = { bounds: Bounds; blocks: Array<[string, Spec]> };
@@ -68,6 +69,7 @@ export class Rooms {
   name: string;
   color: number;
   onChange: (() => void) | null = null;
+  voice: Voice | null = null;
 
   private zero: ZeroApi | null = null;
   private cast: CastPresence | null = null;
@@ -184,6 +186,7 @@ export class Rooms {
         this.zero!.watch<Member[]>('roomMembers', [code], (v) => {
           if (!v) return;
           this.members = v;
+          this.voice?.keep(new Set(v.map((m) => m.player)));
           this.onChange?.();
         }),
         this.zero!.watch<{ name: string } | null>('room', [code], (v) => {
@@ -212,6 +215,7 @@ export class Rooms {
     if (!this.code) return;
     const code = this.code;
     void this.zero?.mutate('leaveRoom', code, this.host.playerId);
+    this.setVoice(false);
     for (const s of this.stops) s();
     this.stops = [];
     clearInterval(this.beat);
@@ -244,6 +248,26 @@ export class Rooms {
     p.holding = false;
     this.host.samplePose(p);
     this.cast.set(packPose(p));
+  }
+
+  /** Join or leave the room's voice chat (call from a click). */
+  async setVoice(on: boolean): Promise<void> {
+    if (!on) {
+      this.voice?.stop();
+      this.voice = null;
+      this.onChange?.();
+      return;
+    }
+    if (!this.code || !this.zero || this.voice) return;
+    const v = new Voice(this.zero, this.code, this.host.playerId);
+    v.onChange = () => this.onChange?.();
+    this.voice = v;
+    const ok = await v.start(this.members.map((m) => m.player).filter((p) => p !== this.host.playerId));
+    if (!ok) {
+      this.status = v.error;
+      this.voice = null;
+    }
+    this.onChange?.();
   }
 
   /** The host is the player who's been in the room longest. */

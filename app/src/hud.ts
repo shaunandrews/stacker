@@ -58,12 +58,15 @@ export interface HudTogether {
     colors: string[];
     members: Array<{ name: string; color: string; me: boolean; host: boolean }>;
     list: Array<{ code: string; name: string; players: number }>;
+    voice: { on: boolean; muted: boolean; connected: number } | null;
   };
   watchList(on: boolean): void;
   create(name: string): void;
   join(code: string): void;
   leave(): void;
   identity(name: string, color: number): void;
+  setVoice(on: boolean): void;
+  setMuted(muted: boolean): void;
 }
 
 const CSS = `
@@ -143,6 +146,7 @@ const CSS = `
 #play .room .code { font: 700 22px/1 ui-monospace, monospace; letter-spacing: 0.12em; }
 #play .room .wide { width: 100%; }
 #play .room .status { color: #fbbf24; min-height: 1em; }
+#play .room .row small { color: var(--muted); margin-left: auto; }
 #play .top .inroom { box-shadow: 0 0 0 1px #22c55e inset; }
 #play .marquee { position: absolute; border: 1.5px solid #22d3ee; background: rgb(34 211 238 / 0.12); border-radius: 3px; display: none; }
 #play .toast { position: absolute; left: 50%; bottom: 96px; transform: translateX(-50%); padding: 6px 12px; border-radius: 999px; background: rgb(21 24 33 / 0.92); border: 1px solid var(--line); color: #e2e8f0; opacity: 0; transition: opacity 0.2s; }
@@ -466,10 +470,9 @@ export class Hud {
     this.roomBtn.textContent = v.code ? `Together · ${v.members.length || 1}` : 'Together';
     this.roomBtn.classList.toggle('inroom', !!v.code);
     if (this.roomEl.hidden) return;
-    // Don't rebuild under someone typing their name or a code.
-    const typing = this.roomEl.contains(document.activeElement) && document.activeElement instanceof HTMLInputElement;
-    const inRoom = !!this.roomEl.querySelector('.code');
-    if (typing && inRoom === !!v.code) this.drawRoomLists();
+    // Rebuild only when the panel's shape changes (in or out of a room, voice on, muted),
+    // so a name or code being typed isn't wiped; otherwise just refresh its lists.
+    if (this.roomShape(v) === this.shape) this.drawRoomLists();
     else this.drawRoom();
   }
 
@@ -482,11 +485,17 @@ export class Hud {
   }
 
   private roomLists: El | null = null;
+  private shape = '';
+
+  private roomShape(v: ReturnType<HudTogether['view']>): string {
+    return `${v.code}|${v.roomName}|${v.voice?.on}|${v.voice?.muted}`;
+  }
 
   private drawRoom(): void {
     const t = this.host.together;
     const v = t.view();
     const r = this.roomEl;
+    this.shape = this.roomShape(v);
     r.replaceChildren();
     if (v.code) {
       r.append(el('h4', '', v.roomName || 'Room'));
@@ -528,6 +537,21 @@ export class Hud {
     this.roomLists = el('div');
     r.append(this.roomLists);
     if (v.code) {
+      r.append(el('h4', '', 'Voice'));
+      const vr = el('div', 'row');
+      if (v.voice?.on) {
+        const mute = el('button', v.voice.muted ? '' : 'on', v.voice.muted ? 'Unmute' : 'Mic on');
+        mute.onclick = () => t.setMuted(!v.voice!.muted);
+        const off = el('button', '', 'Leave voice');
+        off.onclick = () => t.setVoice(false);
+        const n = el('small', 'voice-n', '');
+        vr.append(mute, off, n);
+      } else {
+        const on = el('button', 'wide', 'Join voice');
+        on.onclick = () => t.setVoice(true);
+        vr.append(on);
+      }
+      r.append(vr);
       const leave = el('button', 'wide', 'Leave room');
       leave.onclick = () => t.leave();
       r.append(leave);
@@ -577,6 +601,8 @@ export class Hud {
     }
     const st = this.roomEl.querySelector('.status');
     if (st) st.textContent = v.status;
+    const vn = this.roomEl.querySelector('.voice-n');
+    if (vn && v.voice) vn.textContent = v.voice.connected ? `${v.voice.connected} connected` : 'waiting for others';
   }
 
   private toggleMenu(): void {

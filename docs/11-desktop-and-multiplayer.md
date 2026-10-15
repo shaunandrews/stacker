@@ -1,6 +1,6 @@
 # 11 · Desktop play & cross-device multiplayer (plan)
 
-Status: **Phases 1 (desktop), 2 (edits and players) and 3 (multiplayer spikes) shipped; rooms v1 (Phase 4) shipped without voice and shared kit paging**, which come next. The goal: keyboard and mouse play that feels native rather than "VR with a cursor", and then online rooms where people on computers and in headsets build on the same plate together. Desktop comes first, built so its actions can go over the network later.
+Status: **Phases 1 (desktop), 2 (edits and players) and 3 (multiplayer spikes) shipped; rooms v1 (Phase 4) shipped with spatial voice**; shared kit paging comes next. The goal: keyboard and mouse play that feels native rather than "VR with a cursor", and then online rooms where people on computers and in headsets build on the same plate together. Desktop comes first, built so its actions can go over the network later.
 
 ## What we want
 
@@ -97,7 +97,7 @@ interface Edit {
 | **State model** | A shared log, ordered by the server (`pushEdit` hands out numbers in a transaction). Each player applies the log in order, skipping their own edits (already applied). No host is needed for edits; the room's longest-standing player (the host) only folds the log into a snapshot every 60 entries. When the host leaves, the next player in line takes over |
 | **What travels** | Settled edits (`edits.ts`; a burst is merged and sent as one, big ones are split under the 64 KB field limit); poses at up to 20 Hz (head and hands, or camera and cursor, plus the held block); a snapshot plus the log since it when someone joins |
 | **Conflicts** | First grab wins: your pose names the block you're holding (a hash of its id). Others can't pick it up or delete it, and see a ghost of it in your color where you hold it. Two players editing the same block at the same moment is still last-write-wins |
-| **Voice** | Not yet. Plan: WebRTC audio between each pair, the connection setup passed through the capsule's `signals` table (already there), positioned with Web Audio panners at each player's head or camera. TURN is the open question: Spacefast doesn't offer one, so players behind strict NATs may need a provider |
+| **Voice** | WebRTC audio between each pair who joined voice (`net/voice.ts`). Setup goes through the capsule's `signals` table: offers and answers with their ICE candidates gathered up front (Google and Cloudflare STUN), so a connection is a hello and two messages; the smaller player id offers. Each voice plays through a Web Audio HRTF panner at that player's head or camera. Verified between two browsers. No TURN server: Spacefast doesn't offer one, so players behind strict NATs may not connect (a provider would fix it) |
 | **Rooms** | Open rooms keyed by a five-letter code. A `rooms` table with a heartbeat makes the lobby (the HUD's Together panel and the web page `/rooms`). Guests are enough: a chosen name and one of eight colors (stored on the device) |
 | **Shared frame** | Everything travels in platform-local coordinates. Each player keeps their own plate pose and scale, and remote heads, hands and cursors map through each one's own plate. Bodies keep their real-world size |
 | **Persistence** | A room's build lives in the capsule (snapshot plus log). Your own build is put aside when you join and comes back when you leave; nothing from a room is autosaved over it |
@@ -108,6 +108,7 @@ interface Edit {
 - **Links:** `/?room=CODE` joins on load, on a computer or in the headset's browser; `/rooms` lists open rooms
 - **Presence:** VR players show a head (with a visor) and two hands; desktop players a camera marker and a ring cursor on the build; everyone has a name tag in their color
 - **Locks:** first grab wins (above)
+- **Voice:** Join voice / Mute / Leave voice in the Together panel; in the headset the wrist menu gets Room, Leave (tap twice), Join voice and Mute while you're in a room
 - **Undo** stays per player; kits run locally but their blocks sync like any other edit
 
 How it fits together:
@@ -120,6 +121,7 @@ How it fits together:
 | `net/pose.ts` | The 48-byte pose |
 | `net/room.ts` | The session: join (snapshot + log), send edits, apply others', compact as host, read poses |
 | `net/avatars.ts` | Draws other players and their held blocks |
+| `net/voice.ts` | Spatial voice: WebRTC per pair, panners at each player's head or camera |
 
 Known limits: one presence room per published version (everyone on the site shares it; packets carry a room hash and are filtered), so very busy sites would want app sockets; two people on different published versions can't see each other's poses; same-block conflicts are last-write-wins.
 
@@ -136,4 +138,4 @@ Known limits: one presence room per published version (everyone on the site shar
 
 **Phase 3: multiplayer spikes** (done): transport on Spacefast (above), two browsers sharing a plate, poses at 20 Hz.
 
-**Phase 4: rooms v1:** open rooms, presence, first-grab locks, join snapshots, host hand-off (done); next: spatial voice, shared kit paging, a Together panel in the headset (VR players join by link today).
+**Phase 4: rooms v1:** open rooms, presence, first-grab locks, join snapshots, host hand-off (done); spatial voice and wrist controls (done); next: shared kit paging, and starting or browsing rooms from the headset (VR players join by link today).
